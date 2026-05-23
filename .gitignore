@@ -1,0 +1,12 @@
+# .gitignore
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.db
+cardgen/data/
+auditor/data/
+node_modules/
+.idea/
+.vscode/
+*.log

@@ -1,0 +1,9 @@
+services:
+  bot:
+    build: .
+    container_name: ai-auditor-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./auditor/data:/app/auditor/data
