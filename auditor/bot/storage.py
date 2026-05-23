@@ -32,6 +32,47 @@ class SQLiteStorage(BaseStorage):
         conn = self._get_conn()
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
+            "CREATE TABLE IF NOT EXISTS fsm_states ("
+            "key TEXT PRIMARY KEY, "
+            "state TEXT, "
+            "data TEXT, "
+            "updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS audit_log ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "user_id INTEGER NOT NULL, "
+            "username TEXT, "
+            "url TEXT, "
+            "platform TEXT, "
+            "score INTEGER, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS whitelist ("
+            "user_id INTEGER PRIMARY KEY, "
+            "username TEXT, "
+            "full_name TEXT DEFAULT '', "
+            "approved_by INTEGER, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
+        try:
+            conn.execute("ALTER TABLE whitelist ADD COLUMN full_name TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute(
+            f"DELETE FROM fsm_states WHERE updated_at < datetime('now', '-{self.fsm_ttl} seconds')"
+        )
+        if self.admin_id:
+            conn.execute(
+                "INSERT OR IGNORE INTO whitelist (user_id, username, full_name, approved_by) "
+                "VALUES (?, ?, ?, ?)",
+                (self.admin_id, "admin", "Организатор", self.admin_id),
+            )
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS copy_cache ("
             "key TEXT PRIMARY KEY, "
             "text TEXT NOT NULL, "
@@ -45,22 +86,6 @@ class SQLiteStorage(BaseStorage):
             "updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
             ")"
         )
-        try:
-            conn.execute("ALTER TABLE whitelist ADD COLUMN full_name TEXT DEFAULT ''")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            conn.execute(
-                f"DELETE FROM fsm_states WHERE updated_at < datetime('now', '-{self.fsm_ttl} seconds')"
-            )
-        except sqlite3.OperationalError:
-            pass
-        if self.admin_id:
-            conn.execute(
-                "INSERT OR IGNORE INTO whitelist (user_id, username, full_name, approved_by) "
-                "VALUES (?, ?, ?, ?)",
-                (self.admin_id, "admin", "Организатор", self.admin_id),
-            )
         conn.commit()
         logger.info("SQLiteStorage initialized at %s", self.db_path)
 
