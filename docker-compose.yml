@@ -3,6 +3,7 @@ services:
     build: .
     container_name: ai-auditor-bot
     restart: unless-stopped
+    network_mode: host
     env_file:
       - .env
     volumes:
