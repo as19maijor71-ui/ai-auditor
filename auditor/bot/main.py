@@ -4,6 +4,7 @@ import os
 import sys
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
 
 from auditor.bot.handlers import router, set_storage
 from auditor.bot.rate_limiter import RateLimitMiddleware, RateLimiter
@@ -24,7 +25,8 @@ async def main() -> None:
     storage = SQLiteStorage(settings.SQLITE_PATH, fsm_ttl=settings.FSM_STATE_TTL, admin_id=settings.ADMIN_USER_ID)
     set_storage(storage)
 
-    bot = Bot(token=settings.BOT_TOKEN)
+    session = AiohttpSession(timeout=30)
+    bot = Bot(token=settings.BOT_TOKEN, session=session)
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
 
