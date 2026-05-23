@@ -49,9 +49,12 @@ class SQLiteStorage(BaseStorage):
             conn.execute("ALTER TABLE whitelist ADD COLUMN full_name TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass
-        conn.execute(
-            f"DELETE FROM fsm_states WHERE updated_at < datetime('now', '-{self.fsm_ttl} seconds')"
-        )
+        try:
+            conn.execute(
+                f"DELETE FROM fsm_states WHERE updated_at < datetime('now', '-{self.fsm_ttl} seconds')"
+            )
+        except sqlite3.OperationalError:
+            pass
         if self.admin_id:
             conn.execute(
                 "INSERT OR IGNORE INTO whitelist (user_id, username, full_name, approved_by) "
