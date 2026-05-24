@@ -80,6 +80,18 @@ async def fetch_product_page(url: str) -> str:
         if response.status_code == 404:
             raise CompetitorFetchError("Карточка не найдена")
         if response.status_code in (403, 429, 498):
+            if "ozon.ru" in hostname and not settings.PROXY_URL:
+                cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{url}"
+                try:
+                    async with httpx.AsyncClient(timeout=settings.COMPETITOR_FETCH_TIMEOUT) as fallback:
+                        fb_response = await fallback.get(cache_url, headers={
+                            "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+                        })
+                    if fb_response.status_code == 200:
+                        logger.info("Fetched Ozon via Google cache: %s", url)
+                        return fb_response.text
+                except Exception as cache_err:
+                    logger.warning("Google cache fallback failed: %s", cache_err)
             raise CompetitorFetchError("WB/Ozon заблокировали загрузку. Отправь текст карточки вручную.")
         response.raise_for_status()
         return response.text
