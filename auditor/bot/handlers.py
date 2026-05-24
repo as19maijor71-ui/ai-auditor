@@ -26,7 +26,6 @@ TELEGRAM_MAX_LENGTH = 4096
 _storage_instance: SQLiteStorage | None = None
 
 _export_cache: dict[int, list] = {}
-_suppl_debounce_tasks: dict[int, asyncio.Task] = {}
 
 
 def set_storage(storage: SQLiteStorage) -> None:
@@ -970,6 +969,36 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
     await callback.answer()
 
 
+async def _show_supplement_status(message: Message, state: FSMContext, product, just_got: str = "") -> None:
+    data = await state.get_data()
+    accumulated = data.get("accumulated_text", "")
+
+    has_text = len(accumulated.split("---")) > 3
+    has_photos = "[Данные со скриншота]" in accumulated
+
+    remaining: list[str] = []
+    if not product.description and not has_text:
+        remaining.append("📄 Описание товара — Ctrl+A на вкладке «О товаре» → Ctrl+V сюда")
+    if not has_photos:
+        remaining.append("📸 Скрин всей страницы карточки + скрины каждого фото отдельно")
+    if not has_text and not has_photos:
+        remaining.append("🎥 Если есть видео — скрин кадра или описание")
+    if "[Данные со скриншота]" not in accumulated or "характеристики" not in accumulated.lower():
+        remaining.append("📋 Характеристики — скопируй из карточки")
+
+    prefix = f"✅ {just_got}\n\n" if just_got else ""
+    if not remaining:
+        text = f"{prefix}Всё собрано! Нажми <b>«Запустить аудит»</b>."
+    else:
+        items = "\n".join(f"  {r}" for r in remaining)
+        text = f"{prefix}<b>Осталось добавить:</b>\n{items}"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
+    ])
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
 @router.message(AuditFlow.supplementing_export, F.text)
 async def supplement_text(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
@@ -979,29 +1008,12 @@ async def supplement_text(message: Message, state: FSMContext) -> None:
     if len(accumulated) > 6000:
         accumulated = accumulated[:6000]
     await state.update_data(accumulated_text=accumulated)
-
-    uid = message.from_user.id
-    if uid in _suppl_debounce_tasks:
-        _suppl_debounce_tasks[uid].cancel()
-
-    async def _confirm():
-        await asyncio.sleep(1.5)
-        await message.answer(
-            "✅ Всё получено. Нажми <b>«Запустить аудит»</b> когда готов.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
-            ]),
-            parse_mode="HTML",
-        )
-
-    _suppl_debounce_tasks[uid] = asyncio.create_task(_confirm())
+    product = data.get("supplement_product")
+    await _show_supplement_status(message, state, product, just_got="Текст получен.")
 
 
 @router.message(AuditFlow.supplementing_export, F.photo)
 async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> None:
-    thinking_msg = await message.answer("📸 Распознаю скриншот...")
-
-    ocr_text = ""
     try:
         photo = message.photo[-1]
         file = await bot.get_file(photo.file_id)
@@ -1011,8 +1023,7 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
         ocr_text = await call_vision(image_data, OCR_PROMPT)
     except Exception as e:
         logger.warning(f"OCR failed: {e}")
-
-    await thinking_msg.delete()
+        return
 
     if ocr_text and len(ocr_text.strip()) >= 10:
         data = await state.get_data()
@@ -1022,21 +1033,8 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
             accumulated = accumulated[:6000]
         await state.update_data(accumulated_text=accumulated)
 
-    uid = message.from_user.id
-    if uid in _suppl_debounce_tasks:
-        _suppl_debounce_tasks[uid].cancel()
-
-    async def _confirm():
-        await asyncio.sleep(1.5)
-        await message.answer(
-            "✅ Всё получено. Нажми <b>«Запустить аудит»</b> когда готов.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
-            ]),
-            parse_mode="HTML",
-        )
-
-    _suppl_debounce_tasks[uid] = asyncio.create_task(_confirm())
+    product = (await state.get_data()).get("supplement_product")
+    await _show_supplement_status(message, state, product, just_got="Скриншот обработан.")
 
 
 @router.callback_query(F.data == "suppl_audit")
