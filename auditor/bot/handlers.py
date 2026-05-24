@@ -926,9 +926,10 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
     text = product_to_text(product)
     missing: list[str] = []
     if not product.description:
-        missing.append("📄 Описание товара (скопируй текст из карточки)")
-    missing.append("📸 Фото товара (скриншоты галереи)")
-    missing.append("🎥 Видео (опиши словами или скриншот)")
+        missing.append("📄 Описание товара — открой вкладку «О товаре» и скопируй весь текст")
+    missing.append("📸 Скрин 1 — галерея фото (все миниатюры, чтобы было видно сколько их)")
+    missing.append("📸 Скрин 2 — первые 3-5 фото крупно (главное, lifestyle, инфографика)")
+    missing.append("📸 Скрин 3 — характеристики и состав (вкладка «Характеристики»)")
 
     await state.set_state(AuditFlow.supplementing_export)
     await state.update_data(
@@ -941,9 +942,12 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
     await callback.message.answer(
         f"✅ <b>{product.title[:80]}</b>\n\n"
         f"<b>Что есть из экспорта:</b>\n"
-        f"• Название, бренд, цена, категория\n\n"
-        f"<b>Добавь недостающее (текстом или скриншотами):</b>\n"
+        f"• Название: {product.title[:60]}\n"
+        f"• Бренд: {product.brand or '—'}\n"
+        f"• Цена: {product.price} ₽\n\n"
+        f"<b>Что нужно добавить (текстом или скриншотами):</b>\n"
         f"{missing_text}\n\n"
+        f"💡 <i>Как сделать скрин: Win+Shift+S → выдели область → Ctrl+V в чат</i>\n\n"
         f"Когда всё готово — нажми <b>«Запустить аудит»</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
