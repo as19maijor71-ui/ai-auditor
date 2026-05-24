@@ -26,6 +26,7 @@ TELEGRAM_MAX_LENGTH = 4096
 _storage_instance: SQLiteStorage | None = None
 
 _export_cache: dict[int, list] = {}
+_checklist_throttle: dict[int, float] = {}
 
 
 def set_storage(storage: SQLiteStorage) -> None:
@@ -1008,9 +1009,15 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
 
 
 async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, just_got: str = "") -> None:
+    import time as _time
+    now = _time.monotonic()
+    last = _checklist_throttle.get(chat_id, 0)
+    if now - last < 2.0:
+        return
+    _checklist_throttle[chat_id] = now
+
     data = await state.get_data()
     accumulated = data.get("accumulated_text", "")
-    checklist_msg_id = data.get("checklist_msg_id", 0)
     has_desc = data.get("supplement_has_description", False)
     base_text = data.get("supplement_base_text", "")
 
@@ -1019,33 +1026,21 @@ async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, just_got:
 
     remaining: list[str] = []
     if not has_desc and not has_added_text:
-        remaining.append("📄 Описание товара — Ctrl+A на вкладке «О товаре» → Ctrl+V сюда")
+        remaining.append("📄 Описание товара")
     if not has_photos:
-        remaining.append("📸 Скрин всей страницы карточки + скрины каждого фото отдельно")
+        remaining.append("📸 Скрины фото")
     if not has_added_text and not has_photos:
-        remaining.append("📋 Характеристики — скопируй из карточки")
+        remaining.append("📋 Характеристики")
 
-    prefix = f"✅ {just_got}\n\n" if just_got else ""
+    prefix = f"✅ {just_got}\n" if just_got else ""
     if not remaining:
-        text = f"{prefix}Всё собрано! Жми <b>«Запустить аудит»</b>."
+        text = f"{prefix}Всё собрано!"
     else:
-        items = "\n".join(f"  {r}" for r in remaining)
-        text = f"{prefix}<b>Осталось добавить:</b>\n{items}"
+        text = f"{prefix}Осталось: {', '.join(r for r in remaining)}"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
     ])
-
-    if checklist_msg_id:
-        try:
-            await bot.edit_message_text(text, chat_id=chat_id, message_id=checklist_msg_id,
-                                         reply_markup=kb, parse_mode="HTML")
-            return
-        except TelegramBadRequest as e:
-            if "message is not modified" in str(e):
-                return
-            if "message to edit not found" in str(e):
-                pass
 
     sent = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
     await state.update_data(checklist_msg_id=sent.message_id)
