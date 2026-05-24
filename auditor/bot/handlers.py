@@ -458,7 +458,7 @@ async def guide_audit_cb(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer("⚠️ Недостаточно данных. Отправь текст.", show_alert=True)
         return
     await callback.message.answer("📊 Запускаю аудит...")
-    await _run_full_audit(callback.message, state, accumulated)
+    await _run_full_audit(callback.message, state, accumulated, user_id=callback.from_user.id)
     await callback.answer()
 
 
@@ -539,8 +539,9 @@ async def text_in_collection(message: Message, state: FSMContext) -> None:
         )
 
 
-async def _run_full_audit(message: Message, state: FSMContext, text: str) -> None:
-    limit_msg = _check_audit_limit(message.from_user.id)
+async def _run_full_audit(message: Message, state: FSMContext, text: str, user_id: int = 0) -> None:
+    uid = user_id or message.from_user.id
+    limit_msg = _check_audit_limit(uid)
     if limit_msg:
         await message.answer(limit_msg, parse_mode="HTML")
         await state.set_state(AuditFlow.waiting_url)
@@ -558,7 +559,7 @@ async def _run_full_audit(message: Message, state: FSMContext, text: str) -> Non
     animation_task = asyncio.create_task(_animate_thinking(thinking_msg))
 
     try:
-        result = await _do_audit_text(text, message)
+        result = await _do_audit_text(text, message, uid)
     except Exception as e:
         logger.warning(f"Audit failed: {e}")
         result = None
@@ -589,33 +590,33 @@ async def _do_audit_url(url: str, platform: str, message: Message) -> AuditRepor
             return None
 
         report = await audit_card(product_text, url, platform)
-        _log_audit(message, url, platform, report.overall_score)
+        _log_audit(message.from_user.id, message.from_user.username, url, platform, report.overall_score)
         return report
     except Exception as e:
         logger.warning(f"URL audit failed: {e}")
         return None
 
 
-async def _do_audit_text(text: str, message: Message) -> AuditReport | None:
+async def _do_audit_text(text: str, message: Message, user_id: int = 0) -> AuditReport | None:
     try:
         report = await audit_card(text[:settings.COMPETITOR_MAX_LENGTH], "", "manual")
-        _log_audit(message, "", "manual", report.overall_score)
+        _log_audit(user_id or message.from_user.id, message.from_user.username, "", "manual", report.overall_score)
         return report
     except Exception as e:
         logger.warning(f"Text audit failed: {e}")
         return None
 
 
-def _log_audit(message: Message, url: str, platform: str, score: int) -> None:
+def _log_audit(user_id: int, username: str | None, url: str, platform: str, score: int) -> None:
     if _storage_instance is not None:
         _storage_instance.log_audit(
-            message.from_user.id,
-            message.from_user.username,
+            user_id,
+            username or "",
             url or "manual_input",
             platform,
             score,
         )
-        _storage_instance.increment_usage(message.from_user.id)
+        _storage_instance.increment_usage(user_id)
 
 
 async def send_audit_report(message: Message, report: AuditReport) -> None:
@@ -1064,7 +1065,7 @@ async def suppl_run_audit(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer("⚠️ Недостаточно данных. Отправьте описание или скриншоты.", show_alert=True)
         return
     await callback.message.answer("📊 Запускаю аудит...")
-    await _run_full_audit(callback.message, state, accumulated)
+    await _run_full_audit(callback.message, state, accumulated, user_id=callback.from_user.id)
     await callback.answer()
 
 
