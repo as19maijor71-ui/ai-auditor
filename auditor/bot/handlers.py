@@ -26,7 +26,6 @@ TELEGRAM_MAX_LENGTH = 4096
 _storage_instance: SQLiteStorage | None = None
 
 _export_cache: dict[int, list] = {}
-_checklist_throttle: dict[int, float] = {}
 
 
 def set_storage(storage: SQLiteStorage) -> None:
@@ -980,7 +979,6 @@ async def supplement_text(message: Message, state: FSMContext) -> None:
     if len(accumulated) > 6000:
         accumulated = accumulated[:6000]
     await state.update_data(accumulated_text=accumulated)
-    logger.info(f"supplement_text: total len={len(accumulated)}")
     await _update_checklist(message.chat.id, state, message.bot, just_got="Текст получен.")
 
 
@@ -1010,14 +1008,6 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
 
 
 async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, just_got: str = "") -> None:
-    import time as _time
-    now = _time.monotonic()
-    last = _checklist_throttle.get(chat_id, 0)
-    logger.info(f"_update_checklist called, diff={now - last:.1f}s, just_got={just_got}")
-    if now - last < 2.0:
-        return
-    _checklist_throttle[chat_id] = now
-
     data = await state.get_data()
     accumulated = data.get("accumulated_text", "")
     has_desc = data.get("supplement_has_description", False)
@@ -1040,22 +1030,19 @@ async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, just_got:
     else:
         text = f"{prefix}Осталось: {', '.join(r for r in remaining)}"
 
+    last_text = data.get("checklist_last_text", "")
+    if text == last_text:
+        return
+    await state.update_data(checklist_last_text=text)
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
     ])
 
     try:
-        sent = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
-        logger.info(f"_update_checklist: sent msg_id={sent.message_id}, text={text[:80]}")
-        await state.update_data(checklist_msg_id=sent.message_id)
-    except Exception as e:
-        logger.error(f"_update_checklist send failed: {e}")
-        try:
-            sent = await bot.send_message(chat_id, _escape(text), reply_markup=kb)
-            logger.info(f"_update_checklist: sent fallback msg_id={sent.message_id}")
-            await state.update_data(checklist_msg_id=sent.message_id)
-        except Exception as e2:
-            logger.error(f"_update_checklist fallback also failed: {e2}")
+        await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await bot.send_message(chat_id, _escape(text), reply_markup=kb)
 
 
 @router.callback_query(F.data == "suppl_audit")
