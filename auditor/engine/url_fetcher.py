@@ -45,22 +45,32 @@ async def fetch_product_page(url: str) -> str:
 
     if "ozon.ru" in hostname:
         user_agent = (
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            "Version/17.5 Mobile/15E148 Safari/604.1"
         )
+        headers = {
+            "User-Agent": user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ru",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Dest": "document",
+            "Referer": "https://www.google.com/",
+        }
     else:
         user_agent = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/125.0.0.0 Safari/537.36"
         )
-
-    headers = {
-        "User-Agent": user_agent,
-        "Accept-Language": "ru",
-        "Accept": "text/html,application/xhtml+xml",
-        "Referer": "https://www.google.com",
-    }
+        headers = {
+            "User-Agent": user_agent,
+            "Accept-Language": "ru",
+            "Accept": "text/html,application/xhtml+xml",
+            "Referer": "https://www.google.com",
+        }
     try:
         async with httpx.AsyncClient(timeout=settings.COMPETITOR_FETCH_TIMEOUT) as client:
             response = await client.get(url, headers=headers, follow_redirects=True)
