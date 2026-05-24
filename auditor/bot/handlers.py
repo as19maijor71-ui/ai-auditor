@@ -937,6 +937,7 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
     missing.append("📋 Открой вкладку «Характеристики» → скопируй всё → отправь сюда")
     missing.append("🖼 ШАГ 1: Скриншот ГЛАВНОЙ страницы карточки (заголовок + цена + рейтинг + первое фото)")
     missing.append("🖼 ШАГ 2: Присылай по ОДНОМУ скриншоту каждого фото из галереи. Бот проанализирует каждое и скажет: оставить, удалить или переместить.")
+    missing.append("🎥 ВИДЕО: пришли скриншот видео и ОПИШИ его (длительность, что показано, на какой позиции стоит)")
 
     await state.set_state(AuditFlow.supplementing_export)
     await state.update_data(
