@@ -279,9 +279,16 @@ async def url_received(message: Message, state: FSMContext) -> None:
             )
         await state.set_state(AuditFlow.waiting_url)
     else:
-        # Text path: enter collection mode for photos + text
+        # Text path: check if it's a large dump (WB/Ozon page copy-paste)
+        cleaned = clean_wb_text(text)
+        if len(cleaned) > 400:
+            await state.set_state(AuditFlow.waiting_url)
+            await _run_full_audit(message, state, cleaned)
+            return
+
+        # Short text: enter guided collection mode
         await state.set_state(AuditFlow.collecting_screenshots)
-        await state.update_data(accumulated_text=clean_wb_text(text), current_step=2)
+        await state.update_data(accumulated_text=cleaned, current_step=2)
         await message.answer(
             f"✅ Принято. <b>Шаг 2 из {len(GUIDED_STEPS)}</b>\n\n"
             + GUIDED_STEPS[1],
