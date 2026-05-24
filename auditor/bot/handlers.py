@@ -113,16 +113,16 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             "🔥 Узнай, почему карточка не продаёт — и как это исправить\n\n"
             "Анализирую 5 блоков: заголовок, фото, описание, SEO, конкуренты\n"
             "Приоритеты: 🔴 срочно, 🟡 важно, 🟢 желательно\n\n"
-            "📱 Ozon — отправь ссылку «Поделиться»\n"
-            "📦 WB — я пошагово скажу что копировать\n"
-            "📸 Скриншоты — для чужих карточек\n\n"
+            "📦 <b>WB</b> — гид копирования (5 шагов по вкладкам карточки)\n"
+            "🛒 <b>Ozon</b> — скопируй текст карточки и отправь\n"
+            "📸 <b>Скриншоты</b> — для чужих карточек\n\n"
             "⚡ 3 бесплатных аудита — попробуй сейчас!\n\n"
             f"{start_footer}"
         ),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="📱 Ozon — отправить ссылку", callback_data="how_ozon")],
-                [InlineKeyboardButton(text="📦 WB — гид копирования", callback_data="start_guided")],
+                [InlineKeyboardButton(text="📦 WB — гид копирования (5 шагов)", callback_data="start_guided")],
+                [InlineKeyboardButton(text="🛒 Ozon — скопировать текст", callback_data="how_ozon")],
                 [InlineKeyboardButton(text="📸 Скриншоты", callback_data="how_screenshots")],
                 [InlineKeyboardButton(text="📖 Как пользоваться", callback_data="how_help")],
             ]
@@ -134,13 +134,12 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "how_ozon")
 async def how_ozon_cb(callback: CallbackQuery) -> None:
     await callback.message.answer(
-        "<b>📱 Ozon — отправь share-ссылку</b>\n\n"
-        "1. Открой приложение Ozon на телефоне\n"
-        "2. Зайди в любую карточку товара\n"
-        "3. Нажми кнопку <b>«Поделиться»</b>\n"
-        "4. Скопируй ссылку\n"
-        "5. Отправь ссылку сюда\n\n"
-        "Бот сам загрузит все данные и проведёт аудит.",
+        "<b>🛒 Ozon — скопируй текст карточки</b>\n\n"
+        "1. Открой карточку товара на Ozon\n"
+        "2. Скопируй всё что видишь: название, цену, описание, характеристики\n"
+        "3. Отправь текст сюда\n\n"
+        "Бот проанализирует и выдаст отчёт.\n\n"
+        "<i>Автозагрузка по ссылке временно недоступна — Ozon блокирует серверные запросы.</i>",
         parse_mode="HTML",
     )
     await callback.answer()
@@ -170,12 +169,12 @@ async def how_help_cb(callback: CallbackQuery) -> None:
         "заголовок, фото/видео, описание, SEO, конкуренты. "
         "Выдаёт отчёт с приоритетами: 🔴 срочно, 🟡 важно, 🟢 желательно.\n\n"
         "<b>Способы аудита:</b>\n"
-        "• Ozon — отправь share-ссылку из приложения\n"
-        "• WB — следуй гиду копирования (кнопка ниже)\n"
+        "• WB — гид копирования (5 шагов по вкладкам карточки)\n"
+        "• Ozon — скопируй текст карточки и отправь\n"
         "• Скриншоты — для чужих карточек\n\n"
         "<b>Ограничения:</b>\n"
-        "• 3 бесплатных аудита в минуту\n"
-        "• WB не отдаёт данные по ссылке — только ручной ввод\n"
+        "• 3 бесплатных аудита\n"
+        "• Автозагрузка по ссылке недоступна (блокировка WB/Ozon)\n"
         "• Кнопки видны только в приложении Telegram, не в Web-версии\n\n"
         "<b>Поддержка:</b> " + (f'<a href="https://t.me/{settings.SUPPORT_CHANNEL.lstrip("@")}">канал поддержки</a>' if settings.SUPPORT_CHANNEL else "скоро появится канал поддержки") + "\n\n"
         "<i>Вернуться в начало — /start</i>",
@@ -198,8 +197,8 @@ async def back_to_start_cb(callback: CallbackQuery, state: FSMContext) -> None:
         "<b>Выбери способ:</b>",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="📱 Ozon — отправить ссылку", callback_data="how_ozon")],
                 [InlineKeyboardButton(text="📦 WB — гид копирования", callback_data="start_guided")],
+                [InlineKeyboardButton(text="🛒 Ozon — скопировать текст", callback_data="how_ozon")],
                 [InlineKeyboardButton(text="📸 Скриншоты (если нет ссылки)", callback_data="how_screenshots")],
                 [InlineKeyboardButton(text="📖 Как пользоваться", callback_data="how_help")],
             ]
@@ -279,16 +278,9 @@ async def url_received(message: Message, state: FSMContext) -> None:
             )
         await state.set_state(AuditFlow.waiting_url)
     else:
-        # Text path: check if it's a large dump (WB/Ozon page copy-paste)
-        cleaned = clean_wb_text(text)
-        if len(cleaned) > 400:
-            await state.set_state(AuditFlow.waiting_url)
-            await _run_full_audit(message, state, cleaned)
-            return
-
-        # Short text: enter guided collection mode
+        # Text path: enter collection mode for photos + text
         await state.set_state(AuditFlow.collecting_screenshots)
-        await state.update_data(accumulated_text=cleaned, current_step=2)
+        await state.update_data(accumulated_text=clean_wb_text(text), current_step=2)
         await message.answer(
             f"✅ Принято. <b>Шаг 2 из {len(GUIDED_STEPS)}</b>\n\n"
             + GUIDED_STEPS[1],
@@ -824,9 +816,9 @@ async def cmd_help(message: Message) -> None:
         "📝 Заголовок, 📸 Фото/видео, 📄 Описание, 🔍 SEO, 🕵️ Конкуренты.\n"
         "Выдаёт отчёт с приоритетами: 🔴 срочно, 🟡 важно, 🟢 желательно.\n\n"
         "<b>Как аудитовать Ozon:</b>\n"
-        "1. Открой приложение Ozon\n"
-        "2. Зайди в карточку → «Поделиться» → скопируй ссылку\n"
-        "3. Отправь ссылку боту\n\n"
+        "1. Открой карточку на Ozon\n"
+        "2. Скопируй текст: название, цену, описание, характеристики\n"
+        "3. Отправь боту\n\n"
         "<b>Как аудитовать Wildberries:</b>\n"
         "1. Нажми кнопку «WB — гид копирования»\n"
         "2. Копируй данные по шагам: заголовок → «О товаре» → отзывы → фото\n"
@@ -836,7 +828,7 @@ async def cmd_help(message: Message) -> None:
         "• Телефон: громкость↓ + питание одновременно\n\n"
         "<b>Ограничения:</b>\n"
         "• 3 аудита в минуту\n"
-        "• WB не отдаёт данные по ссылке — только копирование\n\n"
+        "• Автозагрузка по ссылке недоступна — WB и Ozon блокируют серверные IP\n\n"
         "<b>💬 Поддержка:</b> " + (f'<a href="https://t.me/{settings.SUPPORT_CHANNEL.lstrip("@")}">канал поддержки</a>' if settings.SUPPORT_CHANNEL else "скоро") + "\n"
         + (f'<b>🔒 Конфиденциальность:</b> <a href="{settings.PRIVACY_URL}">политика обработки данных</a>\n\n' if settings.PRIVACY_URL else "")
         + "<i>/start — вернуться в начало</i>",
