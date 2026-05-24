@@ -68,6 +68,7 @@ class AuditFlow(StatesGroup):
     collecting_screenshots = State()
     auditing = State()
     choosing_product = State()
+    supplementing_export = State()
 
 
 @router.message(Command("start"))
@@ -922,8 +923,120 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
         await callback.answer()
         return
 
-    await callback.message.answer(f"📊 Аудит: {product.title[:80]}...")
-    await _run_full_audit(callback.message, state, product_to_text(product))
+    text = product_to_text(product)
+    missing: list[str] = []
+    if not product.description:
+        missing.append("📄 Описание товара (скопируй текст из карточки)")
+    missing.append("📸 Фото товара (скриншоты галереи)")
+    missing.append("🎥 Видео (опиши словами или скриншот)")
+
+    await state.set_state(AuditFlow.supplementing_export)
+    await state.update_data(
+        accumulated_text=text,
+        supplement_product=product,
+        supplement_platform=product.platform,
+    )
+
+    missing_text = "\n".join(f"• {m}" for m in missing)
+    await callback.message.answer(
+        f"✅ <b>{product.title[:80]}</b>\n\n"
+        f"<b>Что есть из экспорта:</b>\n"
+        f"• Название, бренд, цена, категория\n\n"
+        f"<b>Добавь недостающее (текстом или скриншотами):</b>\n"
+        f"{missing_text}\n\n"
+        f"Когда всё готово — нажми <b>«Запустить аудит»</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
+            [InlineKeyboardButton(text="🔍 Аудит без дополнений", callback_data="suppl_audit_skip")],
+        ]),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(AuditFlow.supplementing_export, F.text)
+async def supplement_text(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    accumulated = data.get("accumulated_text", "")
+    cleaned = message.text.strip()
+
+    if len(cleaned) < 10:
+        await message.answer("⚠️ Слишком коротко. Отправь описание или характеристики.")
+        return
+
+    accumulated = accumulated + "\n---\n" + cleaned
+    if len(accumulated) > 6000:
+        accumulated = accumulated[:6000]
+
+    await state.update_data(accumulated_text=accumulated)
+    await message.answer(
+        "✅ Текст добавлен. Отправь ещё или нажми <b>«Запустить аудит»</b>.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
+            [InlineKeyboardButton(text="🔍 Аудит без дополнений", callback_data="suppl_audit_skip")],
+        ]),
+        parse_mode="HTML",
+    )
+
+
+@router.message(AuditFlow.supplementing_export, F.photo)
+async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> None:
+    thinking_msg = await message.answer("📸 Распознаю скриншот...")
+
+    ocr_text = ""
+    try:
+        photo = message.photo[-1]
+        file = await bot.get_file(photo.file_id)
+        image_bytes = await bot.download_file(file.file_path)
+        image_data = image_bytes.read()
+        from auditor.templates.prompts import OCR_PROMPT
+        ocr_text = await call_vision(image_data, OCR_PROMPT)
+    except Exception as e:
+        logger.warning(f"OCR failed: {e}")
+
+    await thinking_msg.delete()
+
+    if ocr_text and len(ocr_text.strip()) >= 10:
+        data = await state.get_data()
+        accumulated = data.get("accumulated_text", "")
+        accumulated = accumulated + "\n---\n[Данные со скриншота]\n" + ocr_text
+        if len(accumulated) > 6000:
+            accumulated = accumulated[:6000]
+        await state.update_data(accumulated_text=accumulated)
+        await message.answer(
+            "📸 Распознано и добавлено. Отправь ещё или нажми <b>«Запустить аудит»</b>.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
+            ]),
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer(
+            "⚠️ Не удалось распознать текст. Попробуй другой скриншот или отправь текст вручную.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
+            ]),
+        )
+
+
+@router.callback_query(F.data == "suppl_audit")
+async def suppl_run_audit(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    accumulated = data.get("accumulated_text", "")
+    if not accumulated or len(accumulated.strip()) < 20:
+        await callback.answer("⚠️ Недостаточно данных", show_alert=True)
+        return
+    await callback.message.answer("📊 Запускаю аудит...")
+    await _run_full_audit(callback.message, state, accumulated)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "suppl_audit_skip")
+async def suppl_skip_audit(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    accumulated = data.get("accumulated_text", "")
+    await callback.message.answer("📊 Запускаю аудит (только данные экспорта)...")
+    await _run_full_audit(callback.message, state, accumulated)
     await callback.answer()
 
 
