@@ -14,13 +14,8 @@ class CompetitorFetchError(Exception):
 
 
 _WB_CATALOG_RE = re.compile(r"/catalog/(\d+)/detail\.aspx")
-_WB_PRODUCT_RE = re.compile(r"wb\.ru/product/(\d+)")
-_WB_NM_FROM_URL = re.compile(r"/(\d{6,12})/")
 _OZON_PATH_RE = re.compile(r"^/product/")
 _OZON_SHARE_RE = re.compile(r"^/t/")
-
-# WB internal JSON API — no Cloudflare, no blocking.
-_WB_API = "https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&ab_testing=false&nm={nm}"
 
 
 def detect_platform(url: str) -> str | None:
@@ -42,34 +37,23 @@ def detect_platform(url: str) -> str | None:
     return None
 
 
-def _extract_wb_nm(url: str) -> str | None:
-    m = _WB_CATALOG_RE.search(url)
-    if m:
-        return m.group(1)
-    m = _WB_PRODUCT_RE.search(url)
-    if m:
-        return m.group(1)
-    m = _WB_NM_FROM_URL.search(url)
-    if m:
-        return m.group(1)
-    return None
-
-
-async def _fetch_wb_json(nm: str) -> str:
-    """Fetch WB product data via public JSON API — always works, no blocking."""
-    url = _WB_API.format(nm=nm)
+async def _fetch_wb_page(url: str) -> str:
+    """Fetch WB product page HTML — WB does NOT use Cloudflare."""
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "ru",
+        "Referer": "https://www.google.com/",
     }
     client_kwargs: dict = {"timeout": settings.COMPETITOR_FETCH_TIMEOUT}
     if settings.PROXY_URL:
         client_kwargs["proxies"] = settings.PROXY_URL
     async with httpx.AsyncClient(**client_kwargs) as client:
-        response = await client.get(url, headers=headers)
+        response = await client.get(url, headers=headers, follow_redirects=True)
     if response.status_code == 404:
         raise CompetitorFetchError("Карточка не найдена")
+    if response.status_code in (403, 429, 498):
+        raise CompetitorFetchError("WB заблокировал загрузку. Отправь текст карточки вручную.")
     response.raise_for_status()
     return response.text
 
@@ -108,10 +92,7 @@ async def fetch_product_page(url: str) -> str:
     hostname = (parsed.hostname or "").lower()
 
     if "wildberries.ru" in hostname:
-        nm = _extract_wb_nm(url)
-        if not nm:
-            raise CompetitorFetchError("Не удалось определить артикул WB из ссылки")
-        return await _fetch_wb_json(nm)
+        return await _fetch_wb_page(url)
 
     if "ozon.ru" in hostname:
         return await _fetch_ozon_page(url)
@@ -120,6 +101,7 @@ async def fetch_product_page(url: str) -> str:
 
 
 _LD_JSON_RE = re.compile(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', re.DOTALL)
+_NEXT_DATA_RE = re.compile(r'<script\s+id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL)
 
 
 def extract_product_text(raw_data: str, platform: str) -> str:
@@ -135,45 +117,40 @@ def extract_product_text(raw_data: str, platform: str) -> str:
         return ""
 
 
-def _extract_wb_text(json_str: str) -> str:
-    """Extract product info from WB JSON API response."""
+def _extract_wb_text(html: str) -> str:
+    """Extract product info from WB page HTML via __NEXT_DATA__."""
+    match = _NEXT_DATA_RE.search(html)
+    if not match:
+        return ""
+
     try:
-        data = json.loads(json_str)
+        data = json.loads(match.group(1))
     except json.JSONDecodeError:
         return ""
 
-    products = data.get("data", {}).get("products", [])
-    if not products:
+    product = (
+        data.get("props", {})
+        .get("pageProps", {})
+        .get("product", {})
+    )
+    if not isinstance(product, dict):
         return ""
 
-    product = products[0]
     parts: list[str] = []
 
-    name = product.get("name") or ""
-    if name:
-        parts.append(f"Название: {name}")
+    title = product.get("name") or product.get("title") or ""
+    if title:
+        parts.append(f"Название: {title}")
 
-    brand = product.get("brand") or ""
+    brand = product.get("brand") or product.get("brandName") or ""
     if brand:
         parts.append(f"Бренд: {brand}")
-
-    sizes = product.get("sizes", [])
-    if sizes:
-        price_kop = sizes[0].get("price", {}).get("product", 0)
-        if price_kop:
-            parts.append(f"Цена: {price_kop / 100:.0f} ₽")
-
-    rating = product.get("reviewRating") or product.get("rating")
-    feedbacks = product.get("feedbacks")
-    if rating is not None:
-        fb_str = f" ({feedbacks} отзывов)" if feedbacks else ""
-        parts.append(f"Рейтинг: {rating}{fb_str}")
 
     description = product.get("description") or ""
     if description and description.strip():
         parts.append(f"Описание:\n{description}")
 
-    options = product.get("options") or []
+    options = product.get("characteristics") or product.get("options") or []
     if isinstance(options, list) and options:
         chars_lines = _flatten_characteristics(options)
         if chars_lines:
