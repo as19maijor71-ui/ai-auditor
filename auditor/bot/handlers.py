@@ -1044,8 +1044,18 @@ async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, just_got:
         [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
     ])
 
-    sent = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
-    await state.update_data(checklist_msg_id=sent.message_id)
+    try:
+        sent = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
+        logger.info(f"_update_checklist: sent msg_id={sent.message_id}, text={text[:80]}")
+        await state.update_data(checklist_msg_id=sent.message_id)
+    except Exception as e:
+        logger.error(f"_update_checklist send failed: {e}")
+        try:
+            sent = await bot.send_message(chat_id, _escape(text), reply_markup=kb)
+            logger.info(f"_update_checklist: sent fallback msg_id={sent.message_id}")
+            await state.update_data(checklist_msg_id=sent.message_id)
+        except Exception as e2:
+            logger.error(f"_update_checklist fallback also failed: {e2}")
 
 
 @router.callback_query(F.data == "suppl_audit")
