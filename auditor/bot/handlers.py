@@ -41,7 +41,7 @@ def _escape(text: str) -> str:
 def _check_audit_limit(user_id: int) -> str | None:
     if _storage_instance is None:
         return None
-    if user_id == settings.ADMIN_USER_ID:
+    if _storage_instance.is_whitelisted(user_id):
         return None
     if _storage_instance.has_free_audits(user_id):
         return None
