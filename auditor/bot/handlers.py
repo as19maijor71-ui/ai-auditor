@@ -975,6 +975,7 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
         f"Когда всё готово — <b>«Запустить аудит»</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
+            [InlineKeyboardButton(text="↩️ В главное меню", callback_data="back_to_start")],
         ]),
         parse_mode="HTML",
     )
@@ -1075,6 +1076,7 @@ async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, done_item
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
+        [InlineKeyboardButton(text="↩️ В главное меню", callback_data="back_to_start")],
     ])
 
     try:
