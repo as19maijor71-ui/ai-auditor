@@ -946,6 +946,10 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
         supplement_base_text=text,
         checklist_last_text="",
         photo_count=0,
+        suppl_done: list = [],
+        suppl_items: list = [
+            {"id": f"item_{i}", "text": m} for i, m in enumerate(missing)
+        ],
     )
 
     present: list[str] = [f"• Название: {product.title[:60]}"]
@@ -987,12 +991,21 @@ async def supplement_text(message: Message, state: FSMContext) -> None:
         accumulated = accumulated[:6000]
     await state.update_data(accumulated_text=accumulated)
 
+    data = await state.get_data()
+    items = data.get("suppl_items", [])
+    done = data.get("suppl_done", [])
+    done_id = ""
+    for item in items:
+        if item["id"] not in done and any(w in item["text"] for w in ["Описание", "Характеристики", "текст"]):
+            done_id = item["id"]
+            break
+
     uid = message.from_user.id
     if uid in _suppl_debounce and not _suppl_debounce[uid].done():
         _suppl_debounce[uid].cancel()
     async def _delayed():
         await asyncio.sleep(2)
-        await _update_checklist(message.chat.id, state, message.bot, just_got="Текст получен.")
+        await _update_checklist(message.chat.id, state, message.bot, done_item_id=done_id, just_got="Текст получен.")
     _suppl_debounce[uid] = asyncio.create_task(_delayed())
 
 
@@ -1022,33 +1035,42 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
         full_text = base_text + f"\n\n=== АНАЛИЗ ФОТО ({pcount} шт.) ==={analysis[:7000]}"
         await state.update_data(accumulated_text=full_text)
 
-    await _update_checklist(message.chat.id, state, bot,
-                             just_got=f"Скриншот {pcount} получен." if ocr_text and len(ocr_text.strip()) >= 10
-                             else f"Скриншот {pcount} получен (текст не распознан).")
-
-
-async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, just_got: str = "") -> None:
     data = await state.get_data()
-    accumulated = data.get("accumulated_text", "")
-    has_desc = data.get("supplement_has_description", False)
-    base_text = data.get("supplement_base_text", "")
+    items = data.get("suppl_items", [])
+    done = data.get("suppl_done", [])
+    photo_id = ""
+    for item in items:
+        if item["id"] not in done and any(w in item["text"] for w in ["ШАГ", "скрин", "Скрин", "фото", "главной"]):
+            photo_id = item["id"]
+            break
 
-    has_added_text = len(accumulated) - len(base_text) > 100
-    has_photos = "[Данные со скриншота]" in accumulated
+    await _update_checklist(message.chat.id, state, bot,
+                             done_item_id=photo_id,
+                             just_got=f"Скриншот {pcount} получен." if ocr_text and len(ocr_text.strip()) >= 10
+                             else f"Скриншот {pcount} получен.")
 
-    remaining: list[str] = []
-    if not has_desc and not has_added_text:
-        remaining.append("📄 Описание товара")
-    if not has_photos:
-        remaining.append("📸 Скрины фото")
-    if not has_added_text and not has_photos:
-        remaining.append("📋 Характеристики")
 
-    prefix = f"✅ {just_got}\n" if just_got else ""
-    if not remaining:
+async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, done_item_id: str = "", just_got: str = "") -> None:
+    data = await state.get_data()
+    items: list[dict] = data.get("suppl_items", [])
+    done: list[str] = data.get("suppl_done", [])
+
+    if done_item_id and done_item_id not in done:
+        done.append(done_item_id)
+        await state.update_data(suppl_done=done)
+
+    remaining = []
+    for item in items:
+        if item["id"] in done:
+            remaining.append(f"✅ {item['text']}")
+        else:
+            remaining.append(f"⬜ {item['text']}")
+
+    prefix = f"✅ {just_got}\n\n" if just_got else ""
+    if all(item["id"] in done for item in items):
         text = f"{prefix}Всё собрано!"
     else:
-        text = f"{prefix}Осталось: {', '.join(r for r in remaining)}"
+        text = f"{prefix}" + "\n".join(remaining)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
