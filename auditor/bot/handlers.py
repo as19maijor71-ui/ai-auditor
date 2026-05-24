@@ -26,6 +26,7 @@ TELEGRAM_MAX_LENGTH = 4096
 _storage_instance: SQLiteStorage | None = None
 
 _export_cache: dict[int, list] = {}
+_suppl_last_ack: dict[int, float] = {}
 
 
 def set_storage(storage: SQLiteStorage) -> None:
@@ -978,6 +979,7 @@ async def supplement_text(message: Message, state: FSMContext) -> None:
     if len(accumulated) > 6000:
         accumulated = accumulated[:6000]
     await state.update_data(accumulated_text=accumulated)
+    await _maybe_ack(message)
 
 
 @router.message(AuditFlow.supplementing_export, F.photo)
@@ -1000,6 +1002,19 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
         if len(accumulated) > 6000:
             accumulated = accumulated[:6000]
         await state.update_data(accumulated_text=accumulated)
+
+    await _maybe_ack(message)
+
+
+async def _maybe_ack(message: Message) -> None:
+    import time as _time
+    uid = message.from_user.id
+    now = _time.monotonic()
+    last = _suppl_last_ack.get(uid, 0)
+    if now - last < 4.0:
+        return
+    _suppl_last_ack[uid] = now
+    await message.answer("👆 Когда всё готово — жми <b>«Запустить аудит»</b>", parse_mode="HTML")
 
 
 @router.callback_query(F.data == "suppl_audit")
