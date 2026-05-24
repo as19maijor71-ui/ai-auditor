@@ -26,7 +26,6 @@ TELEGRAM_MAX_LENGTH = 4096
 _storage_instance: SQLiteStorage | None = None
 
 _export_cache: dict[int, list] = {}
-_suppl_tasks: dict[int, asyncio.Task] = {}
 
 
 def set_storage(storage: SQLiteStorage) -> None:
@@ -970,50 +969,6 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
     await callback.answer()
 
 
-async def _show_supplement_status(message: Message, state: FSMContext, has_description: bool, just_got: str = "") -> None:
-    data = await state.get_data()
-    accumulated = data.get("accumulated_text", "")
-    checklist_msg_id = data.get("checklist_msg_id", 0)
-
-    has_text = len(accumulated.split("---")) > 3
-    has_photos = "[Данные со скриншота]" in accumulated
-    has_chars = "характеристики" in accumulated.lower() or "[Данные со скриншота]" in accumulated
-
-    remaining: list[str] = []
-    if not has_description and not has_text:
-        remaining.append("📄 Описание товара — Ctrl+A на вкладке «О товаре» → Ctrl+V сюда")
-    if not has_photos:
-        remaining.append("📸 Скрин всей страницы карточки + скрины каждого фото отдельно")
-    if not has_chars:
-        remaining.append("📋 Характеристики — скопируй из карточки")
-
-    prefix = f"✅ {just_got}\n\n" if just_got else ""
-    if not remaining:
-        text = f"{prefix}Всё собрано! Нажми <b>«Запустить аудит»</b>."
-    else:
-        items = "\n".join(f"  {r}" for r in remaining)
-        text = f"{prefix}<b>Осталось добавить:</b>\n{items}"
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
-    ])
-
-    if checklist_msg_id:
-        try:
-            await message.bot.edit_message_text(
-                text, chat_id=message.chat.id, message_id=checklist_msg_id,
-                reply_markup=kb, parse_mode="HTML",
-            )
-            return
-        except TelegramBadRequest as e:
-            if "message is not modified" in str(e):
-                return
-            pass
-
-    sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
-    await state.update_data(checklist_msg_id=sent.message_id)
-
-
 @router.message(AuditFlow.supplementing_export, F.text)
 async def supplement_text(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
@@ -1023,18 +978,6 @@ async def supplement_text(message: Message, state: FSMContext) -> None:
     if len(accumulated) > 6000:
         accumulated = accumulated[:6000]
     await state.update_data(accumulated_text=accumulated)
-
-    uid = message.from_user.id
-    if uid in _suppl_tasks:
-        _suppl_tasks[uid].cancel()
-
-    async def _confirm():
-        await asyncio.sleep(1.5)
-        data = await state.get_data()
-        has_desc = data.get("supplement_has_description", False)
-        await _show_supplement_status(message, state, has_desc, just_got="Текст получен.")
-
-    _suppl_tasks[uid] = asyncio.create_task(_confirm())
 
 
 @router.message(AuditFlow.supplementing_export, F.photo)
@@ -1058,36 +1001,15 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
             accumulated = accumulated[:6000]
         await state.update_data(accumulated_text=accumulated)
 
-    uid = message.from_user.id
-    if uid in _suppl_tasks:
-        _suppl_tasks[uid].cancel()
-
-    async def _confirm():
-        await asyncio.sleep(1.5)
-        data = await state.get_data()
-        has_desc = data.get("supplement_has_description", False)
-        await _show_supplement_status(message, state, has_desc, just_got="Скриншот обработан.")
-
-    _suppl_tasks[uid] = asyncio.create_task(_confirm())
-
 
 @router.callback_query(F.data == "suppl_audit")
 async def suppl_run_audit(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     accumulated = data.get("accumulated_text", "")
     if not accumulated or len(accumulated.strip()) < 20:
-        await callback.answer("⚠️ Недостаточно данных", show_alert=True)
+        await callback.answer("⚠️ Недостаточно данных. Отправьте описание или скриншоты.", show_alert=True)
         return
     await callback.message.answer("📊 Запускаю аудит...")
-    await _run_full_audit(callback.message, state, accumulated)
-    await callback.answer()
-
-
-@router.callback_query(F.data == "suppl_audit_skip")
-async def suppl_skip_audit(callback: CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
-    accumulated = data.get("accumulated_text", "")
-    await callback.message.answer("📊 Запускаю аудит (только данные экспорта)...")
     await _run_full_audit(callback.message, state, accumulated)
     await callback.answer()
 
