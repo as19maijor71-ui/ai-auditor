@@ -947,10 +947,8 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
         supplement_base_text=text,
         checklist_last_text="",
         photo_count=0,
-        suppl_done: list = [],
-        suppl_items: list = [
-            {"id": f"item_{i}", "text": m} for i, m in enumerate(missing)
-        ],
+        suppl_done=[],
+        suppl_items=[{"id": f"item_{i}", "text": m} for i, m in enumerate(missing)],
     )
 
     present: list[str] = [f"• Название: {product.title[:60]}"]
