@@ -1040,7 +1040,7 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
     done = data.get("suppl_done", [])
     photo_id = ""
     for item in items:
-        if item["id"] not in done and any(w in item["text"] for w in ["ШАГ", "скрин", "Скрин", "фото", "главной"]):
+        if item["id"] not in done and any(w in item["text"] for w in ["ШАГ", "фото", "главной"]):
             photo_id = item["id"]
             break
 
