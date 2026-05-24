@@ -620,6 +620,13 @@ def _log_audit(user_id: int, username: str | None, url: str, platform: str, scor
 
 
 async def send_audit_report(message: Message, report: AuditReport) -> None:
+    if report.overall_score:
+        stars = "⭐" * min(10, max(1, report.overall_score // 10))
+        await message.answer(
+            f"<b>📊 ОБЩАЯ ОЦЕНКА КАРТОЧКИ: {report.overall_score}/100 {stars}</b>",
+            parse_mode="HTML",
+        )
+
     sections = {"title": "📝 ЗАГОЛОВОК", "photos": "📸 ФОТО/ВИДЕО", "description": "📄 ОПИСАНИЕ",
                 "seo": "🔍 SEO", "competitors": "🕵️ КОНКУРЕНТЫ"}
 
@@ -643,9 +650,6 @@ async def send_audit_report(message: Message, report: AuditReport) -> None:
             except Exception as e:
                 logger.warning(f"Failed to send audit chunk: {e}")
                 await message.answer(_escape(chunk))
-
-    if report.overall_score:
-        await message.answer(f"📊 <b>Общая оценка:</b> {report.overall_score}/100", parse_mode="HTML")
 
     if report.summary:
         await message.answer(f"💬 <b>Итог:</b>\n{_escape(report.summary)}", parse_mode="HTML")
@@ -683,6 +687,8 @@ def _format_audit_for_copy(report: AuditReport) -> str:
     sections = {"title": "=== ЗАГОЛОВОК ===", "photos": "=== ФОТО/ВИДЕО ===",
                 "description": "=== ОПИСАНИЕ ===", "seo": "=== SEO ===", "competitors": "=== КОНКУРЕНТЫ ==="}
     parts = [f"AI-АУДИТ КАРТОЧКИ\n{report.url}\n"]
+    if report.overall_score:
+        parts.insert(0, f"=== ОБЩАЯ ОЦЕНКА: {report.overall_score}/100 ===")
     for key, title in sections.items():
         items = [i for i in report.items if i.section == key]
         if not items:
