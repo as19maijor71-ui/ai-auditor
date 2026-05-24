@@ -1058,6 +1058,12 @@ async def suppl_run_audit(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+@router.message()
+async def catch_all(message: Message, state: FSMContext) -> None:
+    current = await state.get_state()
+    logger.warning(f"CATCH_ALL: state={current}, text_len={len(message.text or '')}, has_doc={bool(message.document)}, has_photo={bool(message.photo)}")
+
+
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
     await message.answer(
