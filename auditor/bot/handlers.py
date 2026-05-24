@@ -980,6 +980,7 @@ async def supplement_text(message: Message, state: FSMContext) -> None:
     if len(accumulated) > 6000:
         accumulated = accumulated[:6000]
     await state.update_data(accumulated_text=accumulated)
+    logger.info(f"supplement_text: total len={len(accumulated)}")
     await _update_checklist(message.chat.id, state, message.bot, just_got="Текст получен.")
 
 
@@ -1012,6 +1013,7 @@ async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, just_got:
     import time as _time
     now = _time.monotonic()
     last = _checklist_throttle.get(chat_id, 0)
+    logger.info(f"_update_checklist called, diff={now - last:.1f}s, just_got={just_got}")
     if now - last < 2.0:
         return
     _checklist_throttle[chat_id] = now
