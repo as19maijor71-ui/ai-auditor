@@ -1013,7 +1013,11 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
             accumulated = accumulated[:6000]
         await state.update_data(accumulated_text=accumulated)
 
-    await _update_checklist(message.chat.id, state, bot, just_got="Скриншот получен.")
+    photo_count = (await state.get_data()).get("photo_count", 0) + 1
+    await state.update_data(photo_count=photo_count)
+    await _update_checklist(message.chat.id, state, bot,
+                             just_got=f"Скриншот {photo_count} получен." if ocr_text and len(ocr_text.strip()) >= 10
+                             else f"Скриншот {photo_count} получен (текст не распознан).")
 
 
 async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, just_got: str = "") -> None:
@@ -1038,11 +1042,6 @@ async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, just_got:
         text = f"{prefix}Всё собрано!"
     else:
         text = f"{prefix}Осталось: {', '.join(r for r in remaining)}"
-
-    last_text = data.get("checklist_last_text", "")
-    if text == last_text:
-        return
-    await state.update_data(checklist_last_text=text)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
