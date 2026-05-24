@@ -941,6 +941,7 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
         supplement_platform=product.platform,
         supplement_base_text=text,
         checklist_last_text="",
+        photo_count=0,
     )
 
     present: list[str] = [f"• Название: {product.title[:60]}"]
