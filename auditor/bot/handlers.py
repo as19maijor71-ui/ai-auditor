@@ -26,7 +26,6 @@ TELEGRAM_MAX_LENGTH = 4096
 _storage_instance: SQLiteStorage | None = None
 
 _export_cache: dict[int, list] = {}
-_suppl_last_ack: dict[int, float] = {}
 
 
 def set_storage(storage: SQLiteStorage) -> None:
@@ -939,6 +938,7 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
         accumulated_text=text,
         supplement_has_description=bool(product.description),
         supplement_platform=product.platform,
+        supplement_base_text=text,
     )
 
     present: list[str] = [f"• Название: {product.title[:60]}"]
@@ -979,11 +979,12 @@ async def supplement_text(message: Message, state: FSMContext) -> None:
     if len(accumulated) > 6000:
         accumulated = accumulated[:6000]
     await state.update_data(accumulated_text=accumulated)
-    await _maybe_ack(message)
+    await _update_checklist(message.chat.id, state, message.bot, just_got="Текст получен.")
 
 
 @router.message(AuditFlow.supplementing_export, F.photo)
 async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> None:
+    ocr_text = ""
     try:
         photo = message.photo[-1]
         file = await bot.get_file(photo.file_id)
@@ -1003,18 +1004,51 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
             accumulated = accumulated[:6000]
         await state.update_data(accumulated_text=accumulated)
 
-    await _maybe_ack(message)
+    await _update_checklist(message.chat.id, state, bot, just_got="Скриншот получен.")
 
 
-async def _maybe_ack(message: Message) -> None:
-    import time as _time
-    uid = message.from_user.id
-    now = _time.monotonic()
-    last = _suppl_last_ack.get(uid, 0)
-    if now - last < 4.0:
-        return
-    _suppl_last_ack[uid] = now
-    await message.answer("👆 Когда всё готово — жми <b>«Запустить аудит»</b>", parse_mode="HTML")
+async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, just_got: str = "") -> None:
+    data = await state.get_data()
+    accumulated = data.get("accumulated_text", "")
+    checklist_msg_id = data.get("checklist_msg_id", 0)
+    has_desc = data.get("supplement_has_description", False)
+    base_text = data.get("supplement_base_text", "")
+
+    has_added_text = len(accumulated) - len(base_text) > 100
+    has_photos = "[Данные со скриншота]" in accumulated
+
+    remaining: list[str] = []
+    if not has_desc and not has_added_text:
+        remaining.append("📄 Описание товара — Ctrl+A на вкладке «О товаре» → Ctrl+V сюда")
+    if not has_photos:
+        remaining.append("📸 Скрин всей страницы карточки + скрины каждого фото отдельно")
+    if not has_added_text and not has_photos:
+        remaining.append("📋 Характеристики — скопируй из карточки")
+
+    prefix = f"✅ {just_got}\n\n" if just_got else ""
+    if not remaining:
+        text = f"{prefix}Всё собрано! Жми <b>«Запустить аудит»</b>."
+    else:
+        items = "\n".join(f"  {r}" for r in remaining)
+        text = f"{prefix}<b>Осталось добавить:</b>\n{items}"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
+    ])
+
+    if checklist_msg_id:
+        try:
+            await bot.edit_message_text(text, chat_id=chat_id, message_id=checklist_msg_id,
+                                         reply_markup=kb, parse_mode="HTML")
+            return
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                return
+            if "message to edit not found" in str(e):
+                pass
+
+    sent = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
+    await state.update_data(checklist_msg_id=sent.message_id)
 
 
 @router.callback_query(F.data == "suppl_audit")
