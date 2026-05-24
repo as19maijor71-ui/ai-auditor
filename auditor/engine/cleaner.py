@@ -171,19 +171,38 @@ def clean_wb_text(text: str) -> str:
     # Collapse multiple empty lines
     result = re.sub(r"\n{3,}", "\n\n", result)
 
-    # Remove Ozon recommendation blocks
-    result = re.sub(r"\nРекомендуем также[\s\S]*?(?=\n\n(?:[А-ЯЁA-Z]|О товаре|О магазине|Наведите камеру|Об Ozon|Контакты|$))", "", result)
-    result = re.sub(r"\nПодобрали для вас[\s\S]*?(?=\n\n(?:[А-ЯЁA-Z]|Наведите камеру|Об Ozon|$))", "", result)
-    # Remove review section
-    result = re.sub(r"\n(?:Все отзывы|Отзывы о товаре|Вопросы о товаре)[\s\S]*?(?=\n\n(?:Рекомендуем|Наведите камеру|Об Ozon|Контакты|$))", "", result)
+    # Line-level removal: skip recommendation blocks and review sections
+    lines = result.split("\n")
+    cleaned_lines: list[str] = []
+    skip_mode = False
+    for line in lines:
+        stripped = line.strip()
+        # Enter skip mode
+        if stripped in ("Рекомендуем также", "Подобрали для вас", "Покупают вместе",
+                        "Все отзывы", "Отзывы о товаре", "Вопросы о товаре",
+                        "Подборки товаров в категории"):
+            skip_mode = True
+            continue
+        # Exit skip mode on empty line or section header
+        if skip_mode and (not stripped or stripped.startswith(("О товаре", "Описание", "Характеристики",
+                                                                 "Наведите камеру", "Об Ozon", "Контакты",
+                                                                 "Доставка", "Оплата", "О магазине"))):
+            skip_mode = False
+            if not stripped:
+                continue
+        if not skip_mode:
+            cleaned_lines.append(stripped)
+
+    result = "\n".join(cleaned_lines)
+
     # Remove footer
     result = re.sub(r"Наведите камеру[\s\S]*$", "", result)
     # Remove "Да 0" / "Нет 0" lines
-    result = re.sub(r"\n(?:Да|Нет)\s+\d+(?:\s+(?:Да|Нет)\s+\d+)*\n", "\n", result)
-    # Remove response buttons ("Да 0", "Нет 0" on same line)
     result = re.sub(r"(?:Да|Нет)\s+\d+", "", result)
     # Remove hashtag spam at end of description
     result = re.sub(r"(?:^|\n)#[^\n]+", "", result)
+    # Collapse again
+    result = re.sub(r"\n{3,}", "\n\n", result)
 
     return result.strip()
 
