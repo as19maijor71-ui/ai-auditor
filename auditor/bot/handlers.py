@@ -974,33 +974,9 @@ async def supplement_text(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     accumulated = data.get("accumulated_text", "")
     cleaned = clean_wb_text(message.text.strip())
-
-    import time as _time
-    now = _time.time()
-    last_m = data.get("suppl_last_msg_time", 0)
-    is_split = last_m > 0 and (now - last_m) < 3.0
-    await state.update_data(suppl_last_msg_time=now)
-
-    if is_split:
-        accumulated = accumulated + "\n---\n" + cleaned
-        if len(accumulated) > 6000:
-            accumulated = accumulated[:6000]
-        await state.update_data(accumulated_text=accumulated)
-        return
-
-    if len(cleaned) < 20:
-        await message.answer(
-            "⚠️ Слишком коротко. Отправь больше текста (Ctrl+A на вкладке → Ctrl+C → сюда).",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
-            ]),
-        )
-        return
-
     accumulated = accumulated + "\n---\n" + cleaned
     if len(accumulated) > 6000:
         accumulated = accumulated[:6000]
-
     await state.update_data(accumulated_text=accumulated)
     await message.answer(
         "✅ Текст добавлен. Отправь ещё или нажми <b>«Запустить аудит»</b>.",
