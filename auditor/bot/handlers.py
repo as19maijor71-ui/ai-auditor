@@ -929,13 +929,11 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
 
     text = product_to_text(product)
     missing: list[str] = []
-
     if not product.description:
-        missing.append("📄 Открой вкладку «Описание» (или «О товаре») → скопируй весь текст → отправь сюда")
+        missing.append("📄 Открой вкладку «Описание» → скопируй весь текст → отправь сюда")
     missing.append("📋 Открой вкладку «Характеристики» → скопируй всё → отправь сюда")
-    missing.append("📸 Скрин всей страницы карточки (заголовок + цена + галерея фото — чтобы видеть количество)")
-    missing.append("📸 Скрины каждого фото по отдельности (чтобы оценить качество и продающие свойства каждого)")
-    missing.append("🎥 Если есть видео — скрин кадра или опиши что в видео и на какой позиции оно стоит")
+    missing.append("🖼 ШАГ 1: Скриншот ГЛАВНОЙ страницы карточки (заголовок + цена + рейтинг + первое фото)")
+    missing.append("🖼 ШАГ 2: Присылай по ОДНОМУ скриншоту каждого фото из галереи. Бот проанализирует каждое и скажет: оставить, удалить или переместить.")
 
     await state.set_state(AuditFlow.supplementing_export)
     await state.update_data(
@@ -1009,19 +1007,21 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
         logger.warning(f"OCR failed: {e}")
         return
 
-    if ocr_text and len(ocr_text.strip()) >= 10:
-        data = await state.get_data()
-        accumulated = data.get("accumulated_text", "")
-        accumulated = accumulated + "\n---\n[Данные со скриншота]\n" + ocr_text
-    if len(accumulated) > 8000:
-        accumulated = accumulated[-8000:]
-        await state.update_data(accumulated_text=accumulated)
+    data = await state.get_data()
+    pcount = data.get("photo_count", 0) + 1
+    await state.update_data(photo_count=pcount)
 
-    photo_count = (await state.get_data()).get("photo_count", 0) + 1
-    await state.update_data(photo_count=photo_count)
+    if ocr_text and len(ocr_text.strip()) >= 10:
+        analysis = data.get("photo_analysis", "") + f"\n\n[ФОТО {pcount}]\n{ocr_text.strip()}"
+        await state.update_data(photo_analysis=analysis)
+
+        base_text = data.get("supplement_base_text", "")
+        full_text = base_text + f"\n\n=== АНАЛИЗ ФОТО ({pcount} шт.) ==={analysis[:7000]}"
+        await state.update_data(accumulated_text=full_text)
+
     await _update_checklist(message.chat.id, state, bot,
-                             just_got=f"Скриншот {photo_count} получен." if ocr_text and len(ocr_text.strip()) >= 10
-                             else f"Скриншот {photo_count} получен (текст не распознан).")
+                             just_got=f"Скриншот {pcount} получен." if ocr_text and len(ocr_text.strip()) >= 10
+                             else f"Скриншот {pcount} получен (текст не распознан).")
 
 
 async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, just_got: str = "") -> None:
