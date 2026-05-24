@@ -936,7 +936,7 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
     await state.set_state(AuditFlow.supplementing_export)
     await state.update_data(
         accumulated_text=text,
-        supplement_product=product,
+        supplement_has_description=bool(product.description),
         supplement_platform=product.platform,
     )
 
@@ -969,7 +969,7 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
     await callback.answer()
 
 
-async def _show_supplement_status(message: Message, state: FSMContext, product, just_got: str = "") -> None:
+async def _show_supplement_status(message: Message, state: FSMContext, has_description: bool, just_got: str = "") -> None:
     data = await state.get_data()
     accumulated = data.get("accumulated_text", "")
 
@@ -977,14 +977,14 @@ async def _show_supplement_status(message: Message, state: FSMContext, product, 
     has_photos = "[Данные со скриншота]" in accumulated
 
     remaining: list[str] = []
-    if not product.description and not has_text:
+    if not has_description and not has_text:
         remaining.append("📄 Описание товара — Ctrl+A на вкладке «О товаре» → Ctrl+V сюда")
     if not has_photos:
         remaining.append("📸 Скрин всей страницы карточки + скрины каждого фото отдельно")
-    if not has_text and not has_photos:
-        remaining.append("🎥 Если есть видео — скрин кадра или описание")
     if "[Данные со скриншота]" not in accumulated or "характеристики" not in accumulated.lower():
         remaining.append("📋 Характеристики — скопируй из карточки")
+    if not has_text and not has_photos:
+        remaining.append("🎥 Если есть видео — скрин кадра или описание")
 
     prefix = f"✅ {just_got}\n\n" if just_got else ""
     if not remaining:
@@ -1008,8 +1008,8 @@ async def supplement_text(message: Message, state: FSMContext) -> None:
     if len(accumulated) > 6000:
         accumulated = accumulated[:6000]
     await state.update_data(accumulated_text=accumulated)
-    product = data.get("supplement_product")
-    await _show_supplement_status(message, state, product, just_got="Текст получен.")
+    has_desc = data.get("supplement_has_description", False)
+    await _show_supplement_status(message, state, has_desc, just_got="Текст получен.")
 
 
 @router.message(AuditFlow.supplementing_export, F.photo)
@@ -1033,8 +1033,9 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
             accumulated = accumulated[:6000]
         await state.update_data(accumulated_text=accumulated)
 
-    product = (await state.get_data()).get("supplement_product")
-    await _show_supplement_status(message, state, product, just_got="Скриншот обработан.")
+    data = await state.get_data()
+    has_desc = data.get("supplement_has_description", False)
+    await _show_supplement_status(message, state, has_desc, just_got="Скриншот обработан.")
 
 
 @router.callback_query(F.data == "suppl_audit")
