@@ -996,7 +996,7 @@ async def supplement_text(message: Message, state: FSMContext) -> None:
     done = data.get("suppl_done", [])
     done_id = ""
     for item in items:
-        if item["id"] not in done and any(w in item["text"] for w in ["Описание", "Характеристики", "текст"]):
+        if item["id"] not in done and any(w in item["text"] for w in ["Описание", "Характеристики", "текст", "ВИДЕО", "видео", "ОПИШИ"]):
             done_id = item["id"]
             break
 
