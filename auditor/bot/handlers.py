@@ -925,11 +925,13 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
 
     text = product_to_text(product)
     missing: list[str] = []
+
     if not product.description:
-        missing.append("📄 Описание товара — открой вкладку «О товаре» и скопируй весь текст")
-    missing.append("📸 Скрин 1 — галерея фото (все миниатюры, чтобы было видно сколько их)")
-    missing.append("📸 Скрин 2 — первые 3-5 фото крупно (главное, lifestyle, инфографика)")
-    missing.append("📸 Скрин 3 — характеристики и состав (вкладка «Характеристики»)")
+        missing.append("📄 Открой вкладку «Описание» (или «О товаре») → скопируй весь текст → отправь сюда")
+    missing.append("📋 Открой вкладку «Характеристики» → скопируй всё → отправь сюда")
+    missing.append("📸 Скрин всей страницы карточки (заголовок + цена + галерея фото — чтобы видеть количество)")
+    missing.append("📸 Скрины каждого фото по отдельности (чтобы оценить качество и продающие свойства каждого)")
+    missing.append("🎥 Если есть видео — скрин кадра или опиши что в видео и на какой позиции оно стоит")
 
     await state.set_state(AuditFlow.supplementing_export)
     await state.update_data(
@@ -938,17 +940,26 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
         supplement_platform=product.platform,
     )
 
-    missing_text = "\n".join(f"• {m}" for m in missing)
+    present: list[str] = [f"• Название: {product.title[:60]}"]
+    if product.brand:
+        present.append(f"• Бренд: {product.brand}")
+    if product.price:
+        present.append(f"• Цена: {product.price} ₽")
+    if product.description:
+        present.append(f"• Описание: есть ({len(product.description)} симв.)")
+    if product.category:
+        present.append(f"• Категория: {product.category}")
+
+    missing_text = "\n".join(f"  {m}" for m in missing)
+    present_text = "\n".join(present)
     await callback.message.answer(
         f"✅ <b>{product.title[:80]}</b>\n\n"
-        f"<b>Что есть из экспорта:</b>\n"
-        f"• Название: {product.title[:60]}\n"
-        f"• Бренд: {product.brand or '—'}\n"
-        f"• Цена: {product.price} ₽\n\n"
-        f"<b>Что нужно добавить (текстом или скриншотами):</b>\n"
+        f"<b>Есть из экспорта:</b>\n"
+        f"{present_text}\n\n"
+        f"<b>Добавьте недостающее:</b>\n"
         f"{missing_text}\n\n"
-        f"💡 <i>Как сделать скрин: Win+Shift+S → выдели область → Ctrl+V в чат</i>\n\n"
-        f"Когда всё готово — нажми <b>«Запустить аудит»</b>",
+        f"💡 <i>Скрин: Win+Shift+S → выделить → Ctrl+V в чат</i>\n\n"
+        f"Когда всё готово — <b>«Запустить аудит»</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
             [InlineKeyboardButton(text="🔍 Аудит без дополнений", callback_data="suppl_audit_skip")],
