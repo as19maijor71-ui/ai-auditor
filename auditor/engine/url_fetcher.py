@@ -72,7 +72,10 @@ async def fetch_product_page(url: str) -> str:
             "Referer": "https://www.google.com",
         }
     try:
-        async with httpx.AsyncClient(timeout=settings.COMPETITOR_FETCH_TIMEOUT) as client:
+        client_kwargs: dict = {"timeout": settings.COMPETITOR_FETCH_TIMEOUT}
+        if settings.PROXY_URL:
+            client_kwargs["proxies"] = settings.PROXY_URL
+        async with httpx.AsyncClient(**client_kwargs) as client:
             response = await client.get(url, headers=headers, follow_redirects=True)
         if response.status_code == 404:
             raise CompetitorFetchError("Карточка не найдена")
