@@ -650,6 +650,9 @@ async def send_audit_report(message: Message, report: AuditReport) -> None:
     if report.summary:
         await message.answer(f"💬 <b>Итог:</b>\n{_escape(report.summary)}", parse_mode="HTML")
 
+    if report.competitor_insight:
+        await message.answer(f"🕵️ <b>Конкуренты:</b>\n{_escape(report.competitor_insight)}", parse_mode="HTML")
+
     summary_text = _format_audit_for_copy(report)
     copy_key = f"{message.from_user.id}:{id(summary_text)}"
     if _storage_instance is not None:
