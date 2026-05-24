@@ -26,6 +26,7 @@ TELEGRAM_MAX_LENGTH = 4096
 _storage_instance: SQLiteStorage | None = None
 
 _export_cache: dict[int, list] = {}
+_suppl_debounce: dict[int, asyncio.Task] = {}
 
 
 def set_storage(storage: SQLiteStorage) -> None:
@@ -980,7 +981,14 @@ async def supplement_text(message: Message, state: FSMContext) -> None:
     if len(accumulated) > 6000:
         accumulated = accumulated[:6000]
     await state.update_data(accumulated_text=accumulated)
-    await _update_checklist(message.chat.id, state, message.bot, just_got="Текст получен.")
+
+    uid = message.from_user.id
+    if uid in _suppl_debounce and not _suppl_debounce[uid].done():
+        _suppl_debounce[uid].cancel()
+    async def _delayed():
+        await asyncio.sleep(2)
+        await _update_checklist(message.chat.id, state, message.bot, just_got="Текст получен.")
+    _suppl_debounce[uid] = asyncio.create_task(_delayed())
 
 
 @router.message(AuditFlow.supplementing_export, F.photo)
