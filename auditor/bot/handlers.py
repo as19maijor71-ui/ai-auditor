@@ -26,6 +26,7 @@ TELEGRAM_MAX_LENGTH = 4096
 _storage_instance: SQLiteStorage | None = None
 
 _export_cache: dict[int, list] = {}
+_suppl_tasks: dict[int, asyncio.Task] = {}
 
 
 def set_storage(storage: SQLiteStorage) -> None:
@@ -1008,8 +1009,18 @@ async def supplement_text(message: Message, state: FSMContext) -> None:
     if len(accumulated) > 6000:
         accumulated = accumulated[:6000]
     await state.update_data(accumulated_text=accumulated)
-    has_desc = data.get("supplement_has_description", False)
-    await _show_supplement_status(message, state, has_desc, just_got="Текст получен.")
+
+    uid = message.from_user.id
+    if uid in _suppl_tasks:
+        _suppl_tasks[uid].cancel()
+
+    async def _confirm():
+        await asyncio.sleep(1.5)
+        data = await state.get_data()
+        has_desc = data.get("supplement_has_description", False)
+        await _show_supplement_status(message, state, has_desc, just_got="Текст получен.")
+
+    _suppl_tasks[uid] = asyncio.create_task(_confirm())
 
 
 @router.message(AuditFlow.supplementing_export, F.photo)
@@ -1033,9 +1044,17 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
             accumulated = accumulated[:6000]
         await state.update_data(accumulated_text=accumulated)
 
-    data = await state.get_data()
-    has_desc = data.get("supplement_has_description", False)
-    await _show_supplement_status(message, state, has_desc, just_got="Скриншот обработан.")
+    uid = message.from_user.id
+    if uid in _suppl_tasks:
+        _suppl_tasks[uid].cancel()
+
+    async def _confirm():
+        await asyncio.sleep(1.5)
+        data = await state.get_data()
+        has_desc = data.get("supplement_has_description", False)
+        await _show_supplement_status(message, state, has_desc, just_got="Скриншот обработан.")
+
+    _suppl_tasks[uid] = asyncio.create_task(_confirm())
 
 
 @router.callback_query(F.data == "suppl_audit")
