@@ -599,7 +599,7 @@ async def _do_audit_url(url: str, platform: str, message: Message) -> AuditRepor
 
 async def _do_audit_text(text: str, message: Message, user_id: int = 0) -> AuditReport | None:
     try:
-        report = await audit_card(text[-5000:], "", "manual")
+        report = await audit_card(text[-8000:], "", "manual")
         _log_audit(user_id or message.from_user.id, message.from_user.username, "", "manual", report.overall_score)
         return report
     except Exception as e:
