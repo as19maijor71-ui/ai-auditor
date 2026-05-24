@@ -172,9 +172,10 @@ def clean_wb_text(text: str) -> str:
     result = re.sub(r"\n{3,}", "\n\n", result)
 
     # Remove Ozon recommendation blocks
-    result = re.sub(r"Рекомендуем также[\s\S]*?(?=\n(?:Все отзывы|Описание|Характеристики|Наведите камеру|Об Ozon|Контакты|Отзывы о товаре|$))", "", result)
+    result = re.sub(r"\nРекомендуем также[\s\S]*?(?=\n\n(?:[А-ЯЁA-Z]|О товаре|О магазине|Наведите камеру|Об Ozon|Контакты|$))", "", result)
+    result = re.sub(r"\nПодобрали для вас[\s\S]*?(?=\n\n(?:[А-ЯЁA-Z]|Наведите камеру|Об Ozon|$))", "", result)
     # Remove review section
-    result = re.sub(r"(?:Все отзывы|Отзывы о товаре)[\s\S]*?(?=\n(?:Описание|Характеристики|Наведите камеру|Об Ozon|Контакты|$))", "", result)
+    result = re.sub(r"\n(?:Все отзывы|Отзывы о товаре|Вопросы о товаре)[\s\S]*?(?=\n\n(?:Рекомендуем|Наведите камеру|Об Ozon|Контакты|$))", "", result)
     # Remove footer
     result = re.sub(r"Наведите камеру[\s\S]*$", "", result)
     # Remove "Да 0" / "Нет 0" lines
