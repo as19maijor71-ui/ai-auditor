@@ -953,7 +953,7 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
 
     missing_text = "\n".join(f"  {m}" for m in missing)
     present_text = "\n".join(present)
-    await callback.message.answer(
+    sent = await callback.message.answer(
         f"✅ <b>{product.title[:80]}</b>\n\n"
         f"<b>Есть из экспорта:</b>\n"
         f"{present_text}\n\n"
@@ -963,29 +963,29 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
         f"Когда всё готово — <b>«Запустить аудит»</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
-            [InlineKeyboardButton(text="🔍 Аудит без дополнений", callback_data="suppl_audit_skip")],
         ]),
         parse_mode="HTML",
     )
+    await state.update_data(checklist_msg_id=sent.message_id)
     await callback.answer()
 
 
 async def _show_supplement_status(message: Message, state: FSMContext, has_description: bool, just_got: str = "") -> None:
     data = await state.get_data()
     accumulated = data.get("accumulated_text", "")
+    checklist_msg_id = data.get("checklist_msg_id", 0)
 
     has_text = len(accumulated.split("---")) > 3
     has_photos = "[Данные со скриншота]" in accumulated
+    has_chars = "характеристики" in accumulated.lower() or "[Данные со скриншота]" in accumulated
 
     remaining: list[str] = []
     if not has_description and not has_text:
         remaining.append("📄 Описание товара — Ctrl+A на вкладке «О товаре» → Ctrl+V сюда")
     if not has_photos:
         remaining.append("📸 Скрин всей страницы карточки + скрины каждого фото отдельно")
-    if "[Данные со скриншота]" not in accumulated or "характеристики" not in accumulated.lower():
+    if not has_chars:
         remaining.append("📋 Характеристики — скопируй из карточки")
-    if not has_text and not has_photos:
-        remaining.append("🎥 Если есть видео — скрин кадра или описание")
 
     prefix = f"✅ {just_got}\n\n" if just_got else ""
     if not remaining:
@@ -997,7 +997,19 @@ async def _show_supplement_status(message: Message, state: FSMContext, has_descr
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
     ])
-    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+    if checklist_msg_id:
+        try:
+            await message.bot.edit_message_text(
+                text, chat_id=message.chat.id, message_id=checklist_msg_id,
+                reply_markup=kb, parse_mode="HTML",
+            )
+            return
+        except TelegramBadRequest:
+            pass
+
+    sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await state.update_data(checklist_msg_id=sent.message_id)
 
 
 @router.message(AuditFlow.supplementing_export, F.text)
