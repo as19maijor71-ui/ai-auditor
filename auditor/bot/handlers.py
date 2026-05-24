@@ -599,7 +599,7 @@ async def _do_audit_url(url: str, platform: str, message: Message) -> AuditRepor
 
 async def _do_audit_text(text: str, message: Message, user_id: int = 0) -> AuditReport | None:
     try:
-        report = await audit_card(text[:settings.COMPETITOR_MAX_LENGTH], "", "manual")
+        report = await audit_card(text[-5000:], "", "manual")
         _log_audit(user_id or message.from_user.id, message.from_user.username, "", "manual", report.overall_score)
         return report
     except Exception as e:
@@ -1013,8 +1013,8 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
         data = await state.get_data()
         accumulated = data.get("accumulated_text", "")
         accumulated = accumulated + "\n---\n[Данные со скриншота]\n" + ocr_text
-        if len(accumulated) > 6000:
-            accumulated = accumulated[:6000]
+    if len(accumulated) > 8000:
+        accumulated = accumulated[-8000:]
         await state.update_data(accumulated_text=accumulated)
 
     photo_count = (await state.get_data()).get("photo_count", 0) + 1
