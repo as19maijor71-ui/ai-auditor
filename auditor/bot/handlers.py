@@ -13,6 +13,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from auditor.bot.storage import SQLiteStorage
 from auditor.config import settings
 from auditor.engine.cleaner import clean_wb_text
+from auditor.engine.excel_parser import ExportParseError, parse_export_file, product_to_text
 from auditor.engine.generator import AuditReport, audit_card, call_vision
 from auditor.engine.url_fetcher import detect_platform, extract_product_text, fetch_product_page
 
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_LENGTH = 4096
 
 _storage_instance: SQLiteStorage | None = None
+
+_export_cache: dict[int, list] = {}
 
 
 def set_storage(storage: SQLiteStorage) -> None:
@@ -64,6 +67,7 @@ class AuditFlow(StatesGroup):
     waiting_url = State()
     collecting_screenshots = State()
     auditing = State()
+    choosing_product = State()
 
 
 @router.message(Command("start"))
@@ -113,6 +117,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             "🔥 Узнай, почему карточка не продаёт — и как это исправить\n\n"
             "Анализирую 5 блоков: заголовок, фото, описание, SEO, конкуренты\n"
             "Приоритеты: 🔴 срочно, 🟡 важно, 🟢 желательно\n\n"
+            "📊 <b>Экспорт из ЛК</b> — загрузи XLSX/CSV из WB или Ozon\n"
             "📦 <b>WB</b> — гид копирования (5 шагов по вкладкам карточки)\n"
             "🛒 <b>Ozon</b> — скопируй текст карточки и отправь\n"
             "📸 <b>Скриншоты</b> — для чужих карточек\n\n"
@@ -121,6 +126,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         ),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
+                [InlineKeyboardButton(text="📊 Загрузить экспорт WB/Ozon (XLSX/CSV)", callback_data="how_export")],
                 [InlineKeyboardButton(text="📦 WB — гид копирования (5 шагов)", callback_data="start_guided")],
                 [InlineKeyboardButton(text="🛒 Ozon — скопировать текст", callback_data="how_ozon")],
                 [InlineKeyboardButton(text="📸 Скриншоты", callback_data="how_screenshots")],
@@ -129,6 +135,24 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         ),
         parse_mode="HTML",
     )
+
+
+@router.callback_query(F.data == "how_export")
+async def how_export_cb(callback: CallbackQuery) -> None:
+    await callback.message.answer(
+        "<b>📊 Аудит по экспорту из личного кабинета</b>\n\n"
+        "<b>Wildberries:</b>\n"
+        "1. ЛК → «Товары» → отметить нужные → «Массовое редактирование»\n"
+        "2. «Выгрузить в Excel»\n"
+        "3. Отправь файл боту\n\n"
+        "<b>Ozon:</b>\n"
+        "1. ЛК → «Товары и цены» → «Экспорт»\n"
+        "2. Выбери формат XLSX или CSV\n"
+        "3. Отправь файл боту\n\n"
+        "Бот прочитает файл, покажет список товаров — выбери нужный для аудита.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data == "how_ozon")
@@ -321,14 +345,12 @@ async def start_guided_audit(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(AuditFlow.waiting_url, F.document)
 @router.message(AuditFlow.waiting_url, F.video)
 @router.message(AuditFlow.waiting_url, F.animation)
 async def unsupported_media(message: Message) -> None:
     await message.answer(
-        "⚠️ Бот принимает текст, ссылки на карточки и скриншоты (фото).\n"
-        "Документы, видео и GIF не поддерживаются.\n\n"
-        "Отправь текст карточки, ссылку Ozon или скриншот (Win+Shift+S → Ctrl+V)."
+        "⚠️ Бот принимает текст, файлы экспорта (XLSX/CSV) и скриншоты (фото).\n"
+        "Видео и GIF не поддерживаются."
     )
 
 
@@ -805,6 +827,104 @@ async def copy_audit_report(callback: CallbackQuery) -> None:
         return
     await callback.message.answer(f"<pre>{_escape(text)}</pre>", parse_mode="HTML")
     await callback.answer("✅ Отчёт скопирован")
+
+
+@router.message(F.document)
+async def export_file_received(message: Message, state: FSMContext, bot: Bot) -> None:
+    doc = message.document
+    if not doc:
+        return
+
+    file_ext = ""
+    if doc.file_name:
+        file_ext = doc.file_name.rsplit(".", 1)[-1].lower() if "." in doc.file_name else ""
+
+    if file_ext not in ("xlsx", "xls", "csv"):
+        await message.answer(
+            "⚠️ Неподдерживаемый формат. Загрузите файл экспорта из личного кабинета WB или Ozon (XLSX или CSV)."
+        )
+        return
+
+    if doc.file_size and doc.file_size > 5 * 1024 * 1024:
+        await message.answer("⚠️ Файл слишком большой. Максимум 5 МБ.")
+        return
+
+    await message.answer("📂 Читаю файл экспорта...")
+
+    try:
+        file = await bot.get_file(doc.file_id)
+        file_bytes = await bot.download_file(file.file_path)
+        data = file_bytes.read()
+        products = parse_export_file(data, doc.file_name)
+    except ExportParseError as e:
+        await message.answer(f"⚠️ {e}")
+        return
+    except Exception as e:
+        logger.warning(f"Export parse failed: {e}")
+        await message.answer("⚠️ Не удалось прочитать файл. Убедитесь, что это экспорт из ЛК WB или Ozon.")
+        return
+
+    from auditor.engine.excel_parser import ExportedProduct
+    products: list[ExportedProduct] = products
+
+    platform_name = "WB" if products[0].platform == "wb" else "Ozon"
+
+    if len(products) == 1:
+        p = products[0]
+        text = product_to_text(p)
+        await state.set_state(AuditFlow.waiting_url)
+        await _run_full_audit(message, state, text)
+        return
+
+    _export_cache[message.from_user.id] = products
+
+    keyboard_rows: list[list[InlineKeyboardButton]] = []
+    for p in products[:30]:
+        display = p.title[:60] + ("..." if len(p.title) > 60 else "")
+        if p.sku:
+            display = f"[{p.sku}] {display}"[:64]
+        keyboard_rows.append([
+            InlineKeyboardButton(text=display, callback_data=f"audit_export:{p.row}")
+        ])
+
+    await state.set_state(AuditFlow.choosing_product)
+    await message.answer(
+        f"📊 <b>{platform_name}</b> — найдено {len(products)} товаров.\n\n"
+        f"Выбери товар для аудита (показаны первые 30):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("audit_export:"), AuditFlow.choosing_product)
+async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> None:
+    row_str = callback.data.removeprefix("audit_export:")
+    if not row_str.isdigit():
+        await callback.answer("⚠️ Некорректный выбор")
+        return
+
+    row_num = int(row_str)
+    products = _export_cache.get(callback.from_user.id, [])
+    product = None
+    for p in products:
+        if p.row == row_num:
+            product = p
+            break
+
+    if not product:
+        await callback.answer("⚠️ Товар не найден. Загрузите файл заново.")
+        return
+
+    limit_msg = _check_audit_limit(callback.from_user.id)
+    if limit_msg:
+        await callback.message.answer(limit_msg, parse_mode="HTML")
+        await state.set_state(AuditFlow.waiting_url)
+        await callback.answer()
+        return
+
+    await callback.message.answer(f"📊 Аудит: {product.title[:80]}...")
+    await _run_full_audit(callback.message, state, product_to_text(product))
+    await callback.answer()
 
 
 @router.message(Command("help"))
