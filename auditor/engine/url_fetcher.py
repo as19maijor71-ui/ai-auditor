@@ -13,7 +13,9 @@ class CompetitorFetchError(Exception):
     pass
 
 
-_WB_CATALOG_RE = re.compile(r"^/catalog/(\d+)/detail\.aspx")
+_WB_CATALOG_RE = re.compile(r"/catalog/(\d+)/detail\.aspx")
+_WB_PRODUCT_RE = re.compile(r"wb\.ru/product/(\d+)")
+_WB_NM_FROM_URL = re.compile(r"/(\d{6,12})/")
 _OZON_PATH_RE = re.compile(r"^/product/")
 _OZON_SHARE_RE = re.compile(r"^/t/")
 
@@ -33,7 +35,7 @@ def detect_platform(url: str) -> str | None:
     hostname = parsed.hostname or ""
     hostname = hostname.lower().removeprefix("www.").removeprefix("m.")
 
-    if hostname == "wildberries.ru" and _WB_CATALOG_RE.match(parsed.path):
+    if hostname == "wildberries.ru" and _WB_CATALOG_RE.search(parsed.path):
         return "wb"
     if hostname == "ozon.ru" and (_OZON_PATH_RE.match(parsed.path) or _OZON_SHARE_RE.match(parsed.path)):
         return "ozon"
@@ -41,9 +43,15 @@ def detect_platform(url: str) -> str | None:
 
 
 def _extract_wb_nm(url: str) -> str | None:
-    match = _WB_CATALOG_RE.search(url)
-    if match:
-        return match.group(1)
+    m = _WB_CATALOG_RE.search(url)
+    if m:
+        return m.group(1)
+    m = _WB_PRODUCT_RE.search(url)
+    if m:
+        return m.group(1)
+    m = _WB_NM_FROM_URL.search(url)
+    if m:
+        return m.group(1)
     return None
 
 
