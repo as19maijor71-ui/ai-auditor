@@ -128,9 +128,29 @@ _CATEGORIES = [
 def clean_wb_text(text: str) -> str:
     """Remove navigation, footers, duplicates from WB copy-paste dump."""
     lines = text.split("\n")
-    cleaned: list[str] = []
 
+    # Pass 1: skip recommendation/review blocks
+    pass1: list[str] = []
+    skip_mode = False
     for line in lines:
+        stripped = line.strip()
+        if stripped in ("Рекомендуем также", "Подобрали для вас", "Покупают вместе",
+                        "Все отзывы", "Отзывы о товаре", "Вопросы о товаре",
+                        "Подборки товаров в категории", "У других продавцов"):
+            skip_mode = True
+            continue
+        if skip_mode and (not stripped or stripped.startswith(("О товаре", "Описание", "Характеристики",
+                                                                 "Наведите камеру", "Об Ozon", "Контакты",
+                                                                 "Доставка", "Оплата", "О магазине"))):
+            skip_mode = False
+            if not stripped:
+                continue
+        if not skip_mode:
+            pass1.append(stripped)
+
+    # Pass 2: remove junk lines
+    cleaned: list[str] = []
+    for line in pass1:
         stripped = line.strip()
         if not stripped:
             cleaned.append("")
@@ -171,35 +191,11 @@ def clean_wb_text(text: str) -> str:
     # Collapse multiple empty lines
     result = re.sub(r"\n{3,}", "\n\n", result)
 
-    # Line-level removal: skip recommendation blocks and review sections
-    lines = result.split("\n")
-    cleaned_lines: list[str] = []
-    skip_mode = False
-    for line in lines:
-        stripped = line.strip()
-        # Enter skip mode
-        if stripped in ("Рекомендуем также", "Подобрали для вас", "Покупают вместе",
-                        "Все отзывы", "Отзывы о товаре", "Вопросы о товаре",
-                        "Подборки товаров в категории"):
-            skip_mode = True
-            continue
-        # Exit skip mode on empty line or section header
-        if skip_mode and (not stripped or stripped.startswith(("О товаре", "Описание", "Характеристики",
-                                                                 "Наведите камеру", "Об Ozon", "Контакты",
-                                                                 "Доставка", "Оплата", "О магазине"))):
-            skip_mode = False
-            if not stripped:
-                continue
-        if not skip_mode:
-            cleaned_lines.append(stripped)
-
-    result = "\n".join(cleaned_lines)
-
-    # Remove footer
+    # Remove footer lines
     result = re.sub(r"Наведите камеру[\s\S]*$", "", result)
-    # Remove "Да 0" / "Нет 0" lines
+    # Remove "Да 0" / "Нет 0" review voting
     result = re.sub(r"(?:Да|Нет)\s+\d+", "", result)
-    # Remove hashtag spam at end of description
+    # Remove hashtag spam
     result = re.sub(r"(?:^|\n)#[^\n]+", "", result)
     # Collapse again
     result = re.sub(r"\n{3,}", "\n\n", result)
