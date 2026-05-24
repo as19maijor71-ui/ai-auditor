@@ -178,7 +178,9 @@ def clean_wb_text(text: str) -> str:
     # Remove footer
     result = re.sub(r"Наведите камеру[\s\S]*$", "", result)
     # Remove "Да 0" / "Нет 0" lines
-    result = re.sub(r"\n(?:Да|Нет)\s+\d+\n", "\n", result)
+    result = re.sub(r"\n(?:Да|Нет)\s+\d+(?:\s+(?:Да|Нет)\s+\d+)*\n", "\n", result)
+    # Remove response buttons ("Да 0", "Нет 0" on same line)
+    result = re.sub(r"(?:Да|Нет)\s+\d+", "", result)
     # Remove hashtag spam at end of description
     result = re.sub(r"(?:^|\n)#[^\n]+", "", result)
 
