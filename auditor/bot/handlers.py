@@ -1005,7 +1005,9 @@ async def _show_supplement_status(message: Message, state: FSMContext, has_descr
                 reply_markup=kb, parse_mode="HTML",
             )
             return
-        except TelegramBadRequest:
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                return
             pass
 
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
