@@ -38,6 +38,13 @@ def _escape(text: str) -> str:
     return html.escape(text, quote=False)
 
 
+async def _safe_callback_answer(callback: CallbackQuery, text: str = "", show_alert: bool = False) -> None:
+    try:
+        await _safe_callback_answer(callback,text, show_alert=show_alert)
+    except TelegramBadRequest:
+        pass
+
+
 def _check_audit_limit(user_id: int) -> str | None:
     if _storage_instance is None:
         return None
@@ -80,7 +87,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
 
 async def _do_start(message: Message, state: FSMContext, user_id: int) -> None:
-    logger.info("User %d (@%s) started the bot", user_id, message.from_user.username or "?")
+    logger.info("User %d started the bot", user_id)
 
     footer_parts = []
     if settings.SUPPORT_CHANNEL:
@@ -165,7 +172,8 @@ async def how_export_cb(callback: CallbackQuery) -> None:
         "Бот прочитает файл, покажет список товаров — выбери нужный для аудита.",
         parse_mode="HTML",
     )
-    await callback.answer()
+    await _safe_callback_answer(callback)
+    return
 
 
 @router.callback_query(F.data == "how_ozon")
@@ -179,7 +187,7 @@ async def how_ozon_cb(callback: CallbackQuery) -> None:
         "<i>Автозагрузка по ссылке временно недоступна — Ozon блокирует серверные запросы.</i>",
         parse_mode="HTML",
     )
-    await callback.answer()
+    await _safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == "how_screenshots")
@@ -194,7 +202,7 @@ async def how_screenshots_cb(callback: CallbackQuery) -> None:
         "<i>На телефоне: громкость↓ + питание одновременно</i>",
         parse_mode="HTML",
     )
-    await callback.answer()
+    await _safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == "how_help")
@@ -222,20 +230,20 @@ async def how_help_cb(callback: CallbackQuery) -> None:
             ]
         ),
     )
-    await callback.answer()
+    await _safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == "back_to_start")
 async def back_to_start_cb(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await _do_start(callback.message, state, callback.from_user.id)
-    await callback.answer()
+    await _safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == "start_guided")
 async def start_guided_audit_cb(callback: CallbackQuery, state: FSMContext) -> None:
     await start_guided_audit(callback.message, state)
-    await callback.answer()
+    await _safe_callback_answer(callback)
 
 
 @router.message(AuditFlow.waiting_url, ~F.photo, ~F.document, ~F.video)
@@ -451,11 +459,11 @@ async def guide_audit_cb(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     accumulated = data.get("accumulated_text", "")
     if not accumulated or len(accumulated.strip()) < 20:
-        await callback.answer("⚠️ Недостаточно данных. Отправь текст.", show_alert=True)
+        await _safe_callback_answer(callback,"⚠️ Недостаточно данных. Отправь текст.", show_alert=True)
         return
     await callback.message.answer("📊 Запускаю аудит...")
     await _run_full_audit(callback.message, state, accumulated, user_id=callback.from_user.id)
-    await callback.answer()
+    await _safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == "guide_reset")
@@ -463,7 +471,7 @@ async def guide_reset_cb(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(AuditFlow.waiting_url)
     await callback.message.answer("🔄 Начинаем заново. Отправь текст карточки или выбери способ.")
-    await callback.answer()
+    await _safe_callback_answer(callback)
 
 
 @router.message(AuditFlow.collecting_screenshots, F.text)
@@ -734,11 +742,11 @@ async def _animate_thinking(msg: Message) -> None:
 @router.callback_query(F.data.startswith("wl_req:"))
 async def access_request(callback: CallbackQuery) -> None:
     if _storage_instance is None:
-        await callback.answer("⚠️ Ошибка хранилища")
+        await _safe_callback_answer(callback,"⚠️ Ошибка хранилища")
         return
     user_id_str = callback.data.split(":", 1)[1]
     if not user_id_str.isdigit():
-        await callback.answer("⚠️ Некорректный ID")
+        await _safe_callback_answer(callback,"⚠️ Некорректный ID")
         return
     user_id = int(user_id_str)
     username = callback.from_user.username or ""
@@ -747,7 +755,7 @@ async def access_request(callback: CallbackQuery) -> None:
     encoded_fn = base64.b64encode(full_name.encode()).decode()
     admin_id = settings.ADMIN_USER_ID
     if not admin_id:
-        await callback.answer("⚠️ Администратор не настроен")
+        await _safe_callback_answer(callback,"⚠️ Администратор не настроен")
         return
     admin_kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -766,23 +774,23 @@ async def access_request(callback: CallbackQuery) -> None:
         )
     except Exception as e:
         logger.warning(f"Failed to notify admin: {e}")
-        await callback.answer("⚠️ Не удалось отправить запрос")
+        await _safe_callback_answer(callback,"⚠️ Не удалось отправить запрос")
         return
     await callback.message.edit_text(
         f"🔒 Бот в закрытом тестировании.\n\n✅ Запрос отправлен. Ожидай одобрения.\n\nТвой ID: <code>{user_id}</code>",
         parse_mode="HTML",
     )
-    await callback.answer("✅ Запрос отправлен")
+    await _safe_callback_answer(callback,"✅ Запрос отправлен")
 
 
 @router.callback_query(F.data.startswith("wl_approve:"))
 async def approve_access(callback: CallbackQuery) -> None:
     if _storage_instance is None or settings.ADMIN_USER_ID != callback.from_user.id:
-        await callback.answer("⛔ Нет прав")
+        await _safe_callback_answer(callback,"⛔ Нет прав")
         return
     parts = callback.data.split(":")
     if len(parts) < 2 or not parts[1].isdigit():
-        await callback.answer("⚠️ Некорректный ID")
+        await _safe_callback_answer(callback,"⚠️ Некорректный ID")
         return
     user_id = int(parts[1])
     username = ""
@@ -806,17 +814,17 @@ async def approve_access(callback: CallbackQuery) -> None:
         await callback.bot.send_message(user_id, "✅ <b>Доступ открыт!</b>\n\nНапиши /start чтобы начать.", parse_mode="HTML")
     except Exception as e:
         logger.warning(f"Failed to notify user {user_id} about approval: {e}")
-    await callback.answer("✅ Доступ открыт")
+    await _safe_callback_answer(callback,"✅ Доступ открыт")
 
 
 @router.callback_query(F.data.startswith("wl_reject:"))
 async def reject_access(callback: CallbackQuery) -> None:
     if _storage_instance is None or settings.ADMIN_USER_ID != callback.from_user.id:
-        await callback.answer("⛔ Нет прав")
+        await _safe_callback_answer(callback,"⛔ Нет прав")
         return
     user_id_str = callback.data.split(":", 1)[1]
     if not user_id_str.isdigit():
-        await callback.answer("⚠️ Некорректный ID")
+        await _safe_callback_answer(callback,"⚠️ Некорректный ID")
         return
     user_id = int(user_id_str)
     await callback.message.edit_text(callback.message.html_text + "\n\n❌ <b>Отклонено</b>", parse_mode="HTML")
@@ -824,21 +832,21 @@ async def reject_access(callback: CallbackQuery) -> None:
         await callback.bot.send_message(user_id, "❌ В доступе отказано.")
     except Exception as e:
         logger.warning(f"Failed to notify user {user_id} about rejection: {e}")
-    await callback.answer("❌ Отклонено")
+    await _safe_callback_answer(callback,"❌ Отклонено")
 
 
 @router.callback_query(F.data.startswith("copy_audit:"))
 async def copy_audit_report(callback: CallbackQuery) -> None:
     if _storage_instance is None:
-        await callback.answer("⚠️ Отчёт не найден")
+        await _safe_callback_answer(callback,"⚠️ Отчёт не найден")
         return
     key = callback.data.removeprefix("copy_audit:")
     text = _storage_instance.get_copy_data(key)
     if not text:
-        await callback.answer("⚠️ Отчёт устарел")
+        await _safe_callback_answer(callback,"⚠️ Отчёт устарел")
         return
     await callback.message.answer(f"<pre>{_escape(text)}</pre>", parse_mode="HTML")
-    await callback.answer("📋 Текст отчёта ниже — выдели и скопируй сам")
+    await _safe_callback_answer(callback,"📋 Текст отчёта ниже — выдели и скопируй сам")
 
 
 @router.message(F.document)
@@ -912,7 +920,7 @@ async def export_file_received(message: Message, state: FSMContext, bot: Bot) ->
 async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> None:
     row_str = callback.data.removeprefix("audit_export:")
     if not row_str.isdigit():
-        await callback.answer("⚠️ Некорректный выбор")
+        await _safe_callback_answer(callback,"⚠️ Некорректный выбор")
         return
 
     row_num = int(row_str)
@@ -924,14 +932,14 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
             break
 
     if not product:
-        await callback.answer("⚠️ Товар не найден. Загрузите файл заново.")
+        await _safe_callback_answer(callback,"⚠️ Товар не найден. Загрузите файл заново.")
         return
 
     limit_msg = _check_audit_limit(callback.from_user.id)
     if limit_msg:
         await callback.message.answer(limit_msg, parse_mode="HTML")
         await state.set_state(AuditFlow.waiting_url)
-        await callback.answer()
+        await _safe_callback_answer(callback)
         return
 
     text = product_to_text(product)
@@ -980,7 +988,7 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
         parse_mode="HTML",
     )
     await state.update_data(checklist_msg_id=sent.message_id)
-    await callback.answer()
+    await _safe_callback_answer(callback)
 
 
 @router.message(AuditFlow.supplementing_export, F.text)
@@ -1094,10 +1102,10 @@ async def suppl_run_audit(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     accumulated = data.get("accumulated_text", "")
     if not accumulated or len(accumulated.strip()) < 20:
-        await callback.answer("⚠️ Недостаточно данных. Отправьте описание или скриншоты.", show_alert=True)
+        await _safe_callback_answer(callback,"⚠️ Недостаточно данных. Отправьте описание или скриншоты.", show_alert=True)
         return
     await callback.message.answer("📊 Запускаю аудит...")
-    await callback.answer()
+    await _safe_callback_answer(callback)
     await _run_full_audit(callback.message, state, accumulated, user_id=callback.from_user.id)
 
 
