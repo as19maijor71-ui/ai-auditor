@@ -112,33 +112,38 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     await state.clear()
     await state.set_state(AuditFlow.waiting_url)
-    await message.answer_video(
-        video="BAACAgIAAxkDAAIBpWoRpQlbuS1l6rjDVYRo3GTIzNNEAALanAAC8xaQSOfkk1YK5sz2OwQ",
-        width=800,
-        height=450,
-        caption=(
-            "👋 <b>Привет! Я — AI-аудитор карточек WB и Ozon</b>\n\n"
-            "🔥 Узнай, почему карточка не продаёт — и как это исправить\n\n"
-            "Анализирую 5 блоков: заголовок, фото, описание, SEO, конкуренты\n"
-            "Приоритеты: 🔴 срочно, 🟡 важно, 🟢 желательно\n\n"
-            "📊 <b>Экспорт из ЛК</b> — загрузи XLSX/CSV из WB или Ozon\n"
-            "📦 <b>WB</b> — гид копирования (5 шагов по вкладкам карточки)\n"
-            "🛒 <b>Ozon</b> — скопируй текст карточки и отправь\n"
-            "📸 <b>Скриншоты</b> — для чужих карточек\n\n"
-            "⚡ 3 бесплатных аудита — попробуй сейчас!\n\n"
-            f"{start_footer}"
-        ),
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="📊 Загрузить экспорт WB/Ozon (XLSX/CSV)", callback_data="how_export")],
-                [InlineKeyboardButton(text="📦 WB — гид копирования (5 шагов)", callback_data="start_guided")],
-                [InlineKeyboardButton(text="🛒 Ozon — скопировать текст", callback_data="how_ozon")],
-                [InlineKeyboardButton(text="📸 Скриншоты", callback_data="how_screenshots")],
-                [InlineKeyboardButton(text="📖 Как пользоваться", callback_data="how_help")],
-            ]
-        ),
-        parse_mode="HTML",
+    start_caption = (
+        "👋 <b>Привет! Я — AI-аудитор карточек WB и Ozon</b>\n\n"
+        "🔥 Узнай, почему карточка не продаёт — и как это исправить\n\n"
+        "Анализирую 5 блоков: заголовок, фото, описание, SEO, конкуренты\n"
+        "Приоритеты: 🔴 срочно, 🟡 важно, 🟢 желательно\n\n"
+        "📊 <b>Экспорт из ЛК</b> — загрузи XLSX/CSV из WB или Ozon\n"
+        "📦 <b>WB</b> — гид копирования (5 шагов по вкладкам карточки)\n"
+        "🛒 <b>Ozon</b> — скопируй текст карточки и отправь\n"
+        "📸 <b>Скриншоты</b> — для чужих карточек\n\n"
+        "⚡ 3 бесплатных аудита — попробуй сейчас!\n\n"
+        f"{start_footer}"
     )
+    start_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Загрузить экспорт WB/Ozon (XLSX/CSV)", callback_data="how_export")],
+            [InlineKeyboardButton(text="📦 WB — гид копирования (5 шагов)", callback_data="start_guided")],
+            [InlineKeyboardButton(text="🛒 Ozon — скопировать текст", callback_data="how_ozon")],
+            [InlineKeyboardButton(text="📸 Скриншоты", callback_data="how_screenshots")],
+            [InlineKeyboardButton(text="📖 Как пользоваться", callback_data="how_help")],
+        ]
+    )
+    try:
+        await message.answer_video(
+            video="BAACAgIAAxkDAAIBpWoRpQlbuS1l6rjDVYRo3GTIzNNEAALanAAC8xaQSOfkk1YK5sz2OwQ",
+            width=800,
+            height=450,
+            caption=start_caption,
+            reply_markup=start_kb,
+            parse_mode="HTML",
+        )
+    except Exception:
+        await message.answer(start_caption, reply_markup=start_kb, parse_mode="HTML")
 
 
 @router.callback_query(F.data == "how_export")
