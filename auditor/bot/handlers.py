@@ -550,8 +550,10 @@ async def _run_full_audit(message: Message, state: FSMContext, text: str, user_i
 
     animation_task = asyncio.create_task(_animate_thinking(thinking_msg))
 
+    data = await state.get_data()
+    platform = data.get("supplement_platform", "manual")
     try:
-        result = await _do_audit_text(text, message, uid, platform=data.get("supplement_platform", "manual"))
+        result = await _do_audit_text(text, message, uid, platform=platform)
     except Exception as e:
         logger.warning(f"Audit failed: {e}")
         result = None
