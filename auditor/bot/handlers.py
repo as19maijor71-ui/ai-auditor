@@ -846,13 +846,11 @@ async def copy_audit_report(callback: CallbackQuery) -> None:
     if not text:
         await callback.answer("⚠️ Отчёт устарел")
         return
-    from aiogram.types import CopyTextButton
     escaped = _escape(text)
     await callback.message.edit_text(
         f"<pre>{escaped}</pre>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📋 Скопировать в буфер обмена", copy_text=CopyTextButton(text=text))],
             [InlineKeyboardButton(text="↩️ В главное меню", callback_data="back_to_start")],
         ]),
     )
