@@ -567,7 +567,7 @@ async def _run_full_audit(message: Message, state: FSMContext, text: str, user_i
     animation_task.cancel()
     try:
         await thinking_msg.delete()
-    except TelegramBadRequest:
+    except Exception:
         pass
 
     if result:
