@@ -1025,18 +1025,15 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
     await state.update_data(photo_count=pcount)
 
     if ocr_text and len(ocr_text.strip()) >= 10:
-        analysis = data.get("photo_analysis", "") + f"\n\n[ФОТО {pcount}]\n{ocr_text.strip()}"
-        await state.update_data(photo_analysis=analysis)
-
-        current_text = data.get("accumulated_text", "")
-        photo_marker = "\n\n=== АНАЛИЗ ФОТО ("
-        if photo_marker in current_text:
-            current_text = current_text.split(photo_marker)[0]
-        full_text = current_text + f"\n\n=== АНАЛИЗ ФОТО ({pcount} шт.) ==={analysis[:7000]}"
-        await state.update_data(accumulated_text=full_text)
-        logger.info(f"Photo {pcount}: OCR OK ({len(ocr_text)} chars), total text: {len(full_text)} chars")
-    else:
-        logger.warning(f"Photo {pcount}: OCR empty or too short ({len(ocr_text.strip()) if ocr_text else 0} chars)")
+        if not ocr_text.strip().startswith("НОМЕР:"):
+            ocr_text = f"[ФОТО {pcount}]\n{ocr_text.strip()}"
+        data = await state.get_data()
+        accumulated = data.get("accumulated_text", "")
+        accumulated = accumulated + "\n---\n" + ocr_text.strip()
+        if len(accumulated) > 8000:
+            accumulated = accumulated[-8000:]
+        await state.update_data(accumulated_text=accumulated)
+        logger.info(f"Photo {pcount}: OCR OK ({len(ocr_text)} chars)")
 
     data = await state.get_data()
     items = data.get("suppl_items", [])
