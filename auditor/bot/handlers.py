@@ -40,7 +40,7 @@ def _escape(text: str) -> str:
 
 async def _safe_callback_answer(callback: CallbackQuery, text: str = "", show_alert: bool = False) -> None:
     try:
-        await _safe_callback_answer(callback,text, show_alert=show_alert)
+        await callback.answer(text=text, show_alert=show_alert)
     except TelegramBadRequest:
         pass
 
