@@ -4,6 +4,8 @@ import asyncio
 
 sys.path.insert(0, ".")
 
+TMP = os.environ.get("TEMP", os.environ.get("TMPDIR", "/tmp"))
+
 TESTS_PASSED = 0
 TESTS_FAILED = 0
 
@@ -36,11 +38,11 @@ ws = wb.active
 ws.append(["Артикул продавца", "Артикул WB", "Баркод", "Бренд", "Название товара", "Категория", "Цена", "Цена до скидки"])
 ws.append(["SKU-001", "240151303", "4601234567890", "TestBrand", "Платье женское летнее хлопковое", "Платья", "2499", "4999"])
 ws.append(["SKU-002", "240151304", "4601234567891", "TestBrand", "Футболка мужская оверсайз", "Футболки", "999", "1999"])
-wb.save("/tmp/test_wb.xlsx")
+wb.save(os.path.join(TMP, "test_wb.xlsx"))
 
 from auditor.engine.excel_parser import parse_export_file, product_to_text, ExportedProduct
 
-products = parse_export_file(open("/tmp/test_wb.xlsx", "rb").read(), "test.xlsx")
+products = parse_export_file(open(os.path.join(TMP, "test_wb.xlsx"), "rb").read(), "test.xlsx")
 assert len(products) == 2, f"expected 2, got {len(products)}"
 ok(f"WB: {len(products)} products parsed")
 ok(f"  Product 1: {products[0].title[:40]}")
@@ -54,9 +56,9 @@ wb2 = openpyxl.Workbook()
 ws2 = wb2.active
 ws2.append(["Артикул", "Ozon ID", "Название товара", "Цена", "Цена до скидки", "Описание", "Бренд"])
 ws2.append(["OZ-001", "667351366", "Чай подарочный", "499", "799", "Премиальный чай в шкатулке", "Get Joy"])
-wb2.save("/tmp/test_ozon.xlsx")
+wb2.save(os.path.join(TMP, "test_ozon.xlsx"))
 
-products = parse_export_file(open("/tmp/test_ozon.xlsx", "rb").read(), "test.xlsx")
+products = parse_export_file(open(os.path.join(TMP, "test_ozon.xlsx"), "rb").read(), "test.xlsx")
 assert len(products) == 1
 ok(f"Ozon: {len(products)} product parsed")
 assert products[0].platform == "ozon", f"expected ozon, got {products[0].platform}"
@@ -127,7 +129,7 @@ ok("Footer removed (large)")
 # ─── Test 4: Storage ───
 print("\n=== 4. Storage ===")
 import sqlite3
-conn = sqlite3.connect("/tmp/test_audit.db")
+conn = sqlite3.connect(os.path.join(TMP, "test_audit.db"))
 
 # Set up tables
 conn.execute("PRAGMA journal_mode=WAL")
@@ -175,7 +177,7 @@ else:
     fail("Non-whitelist should be blocked", f"used={used}, whitelisted={non_whitelisted}")
 
 conn.close()
-os.remove("/tmp/test_audit.db")
+os.remove(os.path.join(TMP, "test_audit.db"))
 
 # ─── Test 5: Audit prompt ───
 print("\n=== 5. Audit Prompt ===")

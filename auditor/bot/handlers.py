@@ -621,7 +621,9 @@ def _log_audit(user_id: int, username: str | None, url: str, platform: str, scor
 
 async def send_audit_report(message: Message, report: AuditReport) -> None:
     if report.overall_score:
-        stars = "⭐" * min(10, max(1, report.overall_score // 10))
+        filled = min(10, max(1, report.overall_score // 10))
+        empty = 10 - filled
+        stars = "⭐" * filled + "☆" * empty
         await message.answer(
             f"<b>📊 ОБЩАЯ ОЦЕНКА КАРТОЧКИ: {report.overall_score}/100 {stars}</b>",
             parse_mode="HTML",
@@ -1075,6 +1077,8 @@ async def _update_checklist(chat_id: int, state: FSMContext, bot: Bot, done_item
         text = f"{prefix}Всё собрано!"
     else:
         text = f"{prefix}" + "\n".join(remaining)
+        if any(item["id"] not in done and any(w in item["text"] for w in ["ШАГ", "фото", "главной"]) for item in items):
+            text += "\n\n💡 <i>Скрин: Win+Shift+S → выделить → Ctrl+V в чат</i>"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Запустить аудит", callback_data="suppl_audit")],
