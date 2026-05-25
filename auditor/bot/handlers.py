@@ -848,7 +848,7 @@ async def copy_audit_report(callback: CallbackQuery) -> None:
         return
     escaped = _escape(text)
     await callback.message.edit_text(
-        f"<pre>{escaped}</pre>",
+        f"📋 <b>Нажми Copy вверху этого сообщения для копирования в буфер обмена:</b>\n\n<pre>{escaped}</pre>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="↩️ В главное меню", callback_data="back_to_start")],
@@ -1110,8 +1110,8 @@ async def suppl_run_audit(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer("⚠️ Недостаточно данных. Отправьте описание или скриншоты.", show_alert=True)
         return
     await callback.message.answer("📊 Запускаю аудит...")
-    await _run_full_audit(callback.message, state, accumulated, user_id=callback.from_user.id)
     await callback.answer()
+    await _run_full_audit(callback.message, state, accumulated, user_id=callback.from_user.id)
 
 
 @router.message(Command("help"))
