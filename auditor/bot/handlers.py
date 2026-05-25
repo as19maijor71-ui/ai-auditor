@@ -672,6 +672,12 @@ async def send_audit_report(message: Message, report: AuditReport) -> None:
         "📋 Нажми, чтобы скопировать отчёт целиком.",
         reply_markup=keyboard,
     )
+    await message.answer(
+        "Готово!",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="↩️ В главное меню", callback_data="back_to_start")],
+        ]),
+    )
 
 
 def _section_score(report: AuditReport, section: str) -> str:
