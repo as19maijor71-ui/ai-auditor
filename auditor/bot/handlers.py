@@ -666,6 +666,12 @@ async def send_audit_report(message: Message, report: AuditReport) -> None:
         "📋 Нажми, чтобы скопировать отчёт целиком.",
         reply_markup=keyboard,
     )
+    await message.answer(
+        "↩️",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="↩️ В главное меню", callback_data="back_to_start")],
+        ]),
+    )
 
 
 def _section_score(report: AuditReport, section: str) -> str:
@@ -1030,8 +1036,13 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
         analysis = data.get("photo_analysis", "") + f"\n\n[ФОТО {pcount}]\n{ocr_text.strip()}"
         await state.update_data(photo_analysis=analysis)
 
-        base_text = data.get("supplement_base_text", "")
-        full_text = base_text + f"\n\n=== АНАЛИЗ ФОТО ({pcount} шт.) ==={analysis[:7000]}"
+        # Append to existing accumulated_text, don't overwrite text supplements
+        current_text = data.get("accumulated_text", "")
+        # Remove old photo section if exists
+        photo_marker = "\n\n=== АНАЛИЗ ФОТО ("
+        if photo_marker in current_text:
+            current_text = current_text.split(photo_marker)[0]
+        full_text = current_text + f"\n\n=== АНАЛИЗ ФОТО ({pcount} шт.) ==={analysis[:7000]}"
         await state.update_data(accumulated_text=full_text)
 
     data = await state.get_data()
