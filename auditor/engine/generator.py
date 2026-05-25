@@ -126,16 +126,14 @@ async def call_ai(prompt: str, max_tokens: int = 4096, strict_json: bool = False
 
 
 async def call_vision(image_data: bytes, prompt: str) -> str:
-    # Compress large images to avoid OpenRouter limits
     try:
         from io import BytesIO
         from PIL import Image
         img = Image.open(BytesIO(image_data))
-        if max(img.size) > 1024:
-            img.thumbnail((1024, 1024), Image.LANCZOS)
-            buf = BytesIO()
-            img.save(buf, format="JPEG", quality=75)
-            image_data = buf.getvalue()
+        img.thumbnail((256, 256), Image.LANCZOS)
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=40)
+        image_data = buf.getvalue()
     except Exception:
         pass
 

@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_MODEL: str = "deepseek/deepseek-r1"
-    VISION_MODEL: str = "google/gemini-2.0-flash-001"
+    VISION_MODEL: str = "google/gemini-2.5-flash"
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1/chat/completions"
 
     YANDEXGPT_API_KEY: str = ""
