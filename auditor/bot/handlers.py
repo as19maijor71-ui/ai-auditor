@@ -76,7 +76,11 @@ class AuditFlow(StatesGroup):
 
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
-    logger.info("User %d (@%s) started the bot", message.from_user.id, message.from_user.username or "?")
+    await _do_start(message, state, message.from_user.id)
+
+
+async def _do_start(message: Message, state: FSMContext, user_id: int) -> None:
+    logger.info("User %d (@%s) started the bot", user_id, message.from_user.username or "?")
 
     footer_parts = []
     if settings.SUPPORT_CHANNEL:
@@ -87,18 +91,18 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     footer = " | ".join(footer_parts)
     start_footer = f"📖 /help | {footer}" if footer else "📖 /help"
 
-    if _storage_instance is not None and not _storage_instance.is_whitelisted(message.from_user.id):
+    if _storage_instance is not None and not _storage_instance.is_whitelisted(user_id):
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(
                     text="📩 Запросить доступ",
-                    callback_data=f"wl_req:{message.from_user.id}"
+                    callback_data=f"wl_req:{user_id}"
                 )]
             ]
         )
         await message.answer(
             "🔒 Бот в закрытом тестировании.\n\n"
-            f"Твой Telegram ID: <code>{message.from_user.id}</code>\n\n"
+            f"Твой Telegram ID: <code>{user_id}</code>\n\n"
             "Нажми кнопку ниже, чтобы запросить доступ.",
             reply_markup=keyboard,
             parse_mode="HTML",
@@ -224,7 +228,7 @@ async def how_help_cb(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "back_to_start")
 async def back_to_start_cb(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await cmd_start(callback.message, state)
+    await _do_start(callback.message, state, callback.from_user.id)
     await callback.answer()
 
 
