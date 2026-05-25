@@ -224,20 +224,7 @@ async def how_help_cb(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "back_to_start")
 async def back_to_start_cb(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await state.set_state(AuditFlow.waiting_url)
-    await callback.message.answer(
-        "👋 <b>AI-аудитор WB и Ozon</b>\n\n"
-        "<b>Выбери способ:</b>",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="📦 WB — гид копирования", callback_data="start_guided")],
-                [InlineKeyboardButton(text="🛒 Ozon — скопировать текст", callback_data="how_ozon")],
-                [InlineKeyboardButton(text="📸 Скриншоты (если нет ссылки)", callback_data="how_screenshots")],
-                [InlineKeyboardButton(text="📖 Как пользоваться", callback_data="how_help")],
-            ]
-        ),
-        parse_mode="HTML",
-    )
+    await cmd_start(callback.message, state)
     await callback.answer()
 
 
@@ -564,7 +551,7 @@ async def _run_full_audit(message: Message, state: FSMContext, text: str, user_i
     animation_task = asyncio.create_task(_animate_thinking(thinking_msg))
 
     try:
-        result = await _do_audit_text(text, message, uid)
+        result = await _do_audit_text(text, message, uid, platform=data.get("supplement_platform", "manual"))
     except Exception as e:
         logger.warning(f"Audit failed: {e}")
         result = None
@@ -602,10 +589,10 @@ async def _do_audit_url(url: str, platform: str, message: Message) -> AuditRepor
         return None
 
 
-async def _do_audit_text(text: str, message: Message, user_id: int = 0) -> AuditReport | None:
+async def _do_audit_text(text: str, message: Message, user_id: int = 0, platform: str = "manual") -> AuditReport | None:
     try:
-        report = await audit_card(text[-8000:], "", "manual")
-        _log_audit(user_id or message.from_user.id, message.from_user.username, "", "manual", report.overall_score)
+        report = await audit_card(text[-8000:], "", platform)
+        _log_audit(user_id or message.from_user.id, message.from_user.username, "", platform, report.overall_score)
         return report
     except Exception as e:
         logger.warning(f"Text audit failed: {e}")
@@ -846,15 +833,8 @@ async def copy_audit_report(callback: CallbackQuery) -> None:
     if not text:
         await callback.answer("⚠️ Отчёт устарел")
         return
-    escaped = _escape(text)
-    await callback.message.edit_text(
-        f"📋 <b>Нажми Copy вверху этого сообщения для копирования в буфер обмена:</b>\n\n<pre>{escaped}</pre>",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="↩️ В главное меню", callback_data="back_to_start")],
-        ]),
-    )
-    await callback.answer("✅ Отчёт скопирован")
+    await callback.message.answer(f"<pre>{_escape(text)}</pre>", parse_mode="HTML")
+    await callback.answer("📋 Текст отчёта ниже — выдели и скопируй сам")
 
 
 @router.message(F.document)
