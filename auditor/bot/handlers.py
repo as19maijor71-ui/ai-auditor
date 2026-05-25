@@ -657,18 +657,10 @@ async def send_audit_report(message: Message, report: AuditReport) -> None:
     copy_key = f"{message.from_user.id}:{id(summary_text)}"
     if _storage_instance is not None:
         _storage_instance.store_copy_data(copy_key, summary_text)
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📋 Копировать отчёт", callback_data=f"copy_audit:{copy_key}")]
-        ]
-    )
     await message.answer(
         "📋 Нажми, чтобы скопировать отчёт целиком.",
-        reply_markup=keyboard,
-    )
-    await message.answer(
-        "↩️",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Копировать отчёт", callback_data=f"copy_audit:{copy_key}")],
             [InlineKeyboardButton(text="↩️ В главное меню", callback_data="back_to_start")],
         ]),
     )
@@ -1036,14 +1028,15 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
         analysis = data.get("photo_analysis", "") + f"\n\n[ФОТО {pcount}]\n{ocr_text.strip()}"
         await state.update_data(photo_analysis=analysis)
 
-        # Append to existing accumulated_text, don't overwrite text supplements
         current_text = data.get("accumulated_text", "")
-        # Remove old photo section if exists
         photo_marker = "\n\n=== АНАЛИЗ ФОТО ("
         if photo_marker in current_text:
             current_text = current_text.split(photo_marker)[0]
         full_text = current_text + f"\n\n=== АНАЛИЗ ФОТО ({pcount} шт.) ==={analysis[:7000]}"
         await state.update_data(accumulated_text=full_text)
+        logger.info(f"Photo {pcount}: OCR OK ({len(ocr_text)} chars), total text: {len(full_text)} chars")
+    else:
+        logger.warning(f"Photo {pcount}: OCR empty or too short ({len(ocr_text.strip()) if ocr_text else 0} chars)")
 
     data = await state.get_data()
     items = data.get("suppl_items", [])
