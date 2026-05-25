@@ -1041,7 +1041,6 @@ async def supplement_photo(message: Message, state: FSMContext, bot: Bot) -> Non
         ocr_text = await call_vision(image_data, OCR_PROMPT)
     except Exception as e:
         logger.warning(f"OCR failed: {e}")
-        return
 
     data = await state.get_data()
     pcount = data.get("photo_count", 0) + 1
