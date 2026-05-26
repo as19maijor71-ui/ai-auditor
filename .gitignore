@@ -10,3 +10,6 @@ node_modules/
 .idea/
 .vscode/
 *.log
+.tmp-check-phase-inspect-*/
+pytest-cache-files-*/
+.codex/check-phase-state-*.json

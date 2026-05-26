@@ -8,20 +8,50 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from auditor.bot.storage import SQLiteStorage
+from auditor.bot.paste_collector import (
+    append_paste_part,
+    build_paste_status_text,
+    decode_txt_file,
+    is_enough_for_quick_audit,
+    is_txt_document,
+)
 from auditor.config import settings
 from auditor.engine.cleaner import clean_wb_text
 from auditor.engine.excel_parser import ExportParseError, parse_export_file, product_to_text
+from auditor.engine.audit_runner import QuickAuditError, run_quick_text_audit
 from auditor.engine.generator import AuditReport, audit_card, call_vision
+from auditor.engine.media_models import MediaItem, VideoDescription
+from auditor.engine.media_runner import (
+    MediaAuditError,
+    build_media_audit_items,
+    call_gemini_media_audit,
+    parse_video_description,
+)
+from auditor.engine.paste_models import LocalAuditFacts, MarketplaceCardSnapshot
+from auditor.engine.paste_parser import (
+    build_local_audit_facts,
+    parse_marketplace_paste,
+    sanitize_personal_data,
+)
+from auditor.engine.report_exporter import (
+    build_report_filename,
+    export_audit_report_text,
+    extract_top_actions,
+)
 from auditor.engine.url_fetcher import detect_platform, extract_product_text, fetch_product_page
+from auditor.templates.prompts import build_video_description_help_text
 
 router = Router()
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_LENGTH = 4096
+PASTE_TXT_MAX_BYTES: int = 128 * 1024
+REPORT_TEXT_MAX_CHUNKS: int = 3
+PRE_TEXT_SAFE_CHUNK_LENGTH: int = (TELEGRAM_MAX_LENGTH - len("<pre></pre>")) // 5
 
 _storage_instance: SQLiteStorage | None = None
 
@@ -60,6 +90,27 @@ def _check_audit_limit(user_id: int) -> str | None:
     )
 
 
+async def _check_media_audit_limit(user_id: int, state: FSMContext) -> str | None:
+    data = await state.get_data()
+    if (
+        data.get("last_audit_user_id") == user_id
+        and isinstance(data.get("last_audit_report"), dict)
+        and data.get("last_report_media_added") is True
+    ):
+        return (
+            "⚠️ <b>Медиа уже добавлены к этому отчёту.</b>\n\n"
+            "Визуальное расширение можно запускать только один раз для одного аудита."
+        )
+
+    limit_msg = _check_audit_limit(user_id)
+    if not limit_msg:
+        return None
+
+    if data.get("last_audit_user_id") == user_id and isinstance(data.get("last_audit_report"), dict):
+        return None
+    return limit_msg
+
+
 def _safe_send(text: str) -> list[str]:
     chunks: list[str] = []
     while len(text) > TELEGRAM_MAX_LENGTH:
@@ -73,8 +124,254 @@ def _safe_send(text: str) -> list[str]:
     return chunks
 
 
+def _safe_send_pre_chunks(text: str) -> list[str]:
+    chunks: list[str] = []
+    max_length = max(1, PRE_TEXT_SAFE_CHUNK_LENGTH)
+    while len(text) > max_length:
+        split_at = text.rfind("\n", 0, max_length)
+        if split_at == -1:
+            split_at = max_length
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    if text:
+        chunks.append(text)
+    return chunks
+
+
+def _paste_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Запустить быстрый аудит", callback_data="paste_run")],
+            [InlineKeyboardButton(text="🔄 Начать заново", callback_data="paste_reset")],
+            [InlineKeyboardButton(text="↩️ В главное меню", callback_data="back_to_start")],
+        ],
+    )
+
+
+def _media_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Я отправил все фото", callback_data="media_photos_done")],
+            [InlineKeyboardButton(text="🎥 Описать видео", callback_data="media_describe_video")],
+            [InlineKeyboardButton(text="↩️ В главное меню", callback_data="back_to_start")],
+        ],
+    )
+
+
+def _media_video_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="↩️ Назад к фото", callback_data="media_back_to_photos")],
+        ],
+    )
+
+
+def _report_actions_keyboard(copy_key: str, media_added: bool) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="📋 Копировать отчёт", callback_data=f"copy_audit:{copy_key}")],
+    ]
+    if not media_added:
+        buttons.append(
+            [InlineKeyboardButton(text="📸 Добавить фото/видео к отчёту", callback_data="media_next_step")]
+        )
+    buttons.append([InlineKeyboardButton(text="↩️ В главное меню", callback_data="back_to_start")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _build_media_start_text() -> str:
+    return (
+        "📸 <b>Медиа-расширение отчёта</b>\n\n"
+        "Отправляй фото галереи по порядку: первое фото станет позицией 1, "
+        "второе — позицией 2 и так далее.\n\n"
+        f"Максимум: {settings.MEDIA_MAX_PHOTOS} фото. Для MVP достаточно главного фото, "
+        "первых 5-7 фото и всех слайдов с инфографикой, составом, упаковкой или размерами.\n\n"
+        "Когда фото закончатся, нажми <b>«✅ Я отправил все фото»</b>. "
+        "Видео файлом отправлять не нужно — его можно описать текстом по шаблону."
+    )
+
+
+def _media_type_label(media_type: str) -> str:
+    return {
+        "main": "главное фото",
+        "lifestyle": "lifestyle",
+        "infographic": "инфографика",
+        "composition": "состав/комплектация",
+        "packaging": "упаковка",
+        "review": "отзыв/UGC",
+        "other": "другое",
+    }.get(media_type, media_type)
+
+
+def _media_verdict_label(verdict: str) -> str:
+    return {
+        "keep": "оставить",
+        "remove": "убрать/заменить",
+        "move": "переместить",
+        "unknown": "проверить вручную",
+    }.get(verdict, verdict)
+
+
+def _video_type_label(video_type: str) -> str:
+    return {
+        "unboxing": "распаковка",
+        "product_review": "обзор товара",
+        "product_usage": "использование продукта",
+        "before_after": "до/после",
+        "recipe_or_instruction": "рецепт или инструкция",
+        "customer_review": "отзыв покупателя",
+        "slideshow": "слайд-шоу",
+        "ad": "реклама",
+        "weak_or_unclear": "слабое или непонятное видео",
+        "other": "другое",
+    }.get(video_type, video_type)
+
+
+def _build_start_caption(start_footer: str) -> str:
+    return (
+        "👋 <b>AI-аудитор карточек WB/Ozon</b>\n\n"
+        "<b>Загрузи ссылку — получи отчёт.</b> Сейчас самый надёжный путь — "
+        "скопировать текст страницы карточки из браузера.\n\n"
+        "🧾 <b>Основной способ</b>\n"
+        "Нажми кнопку <b>«🧾 Вставить текст карточки»</b> ниже, затем:\n"
+        "1. Открой карточку WB/Ozon в браузере.\n"
+        "2. Нажми <code>Ctrl+A</code>.\n"
+        "3. Нажми <code>Ctrl+C</code>.\n"
+        "4. Вставь текст в бот одним или несколькими сообщениями.\n"
+        "5. Если Telegram не принимает длинный текст — отправь <code>.txt</code> файл.\n"
+        "6. Нажми <b>«✅ Запустить быстрый аудит»</b>.\n\n"
+        "⚡ Быстрый аудит проверяет текст и факты карточки без проверки фото/видео.\n"
+        "После текстового отчёта можно будет усилить аудит фото/видео отдельным шагом.\n\n"
+        "↩️ <b>Запасные/старые способы ниже</b>\n"
+        "Excel/CSV, старый WB-гид, Ozon-подсказка и скриншоты сохранены, "
+        "но это не основной путь.\n\n"
+        "⚡ 3 бесплатных аудита — попробуй сейчас!\n\n"
+        f"{start_footer}"
+    )
+
+
+def _build_start_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🧾 Вставить текст карточки", callback_data="paste_start")],
+            [InlineKeyboardButton(text="📊 Запасной: экспорт XLSX/CSV", callback_data="how_export")],
+            [InlineKeyboardButton(text="📦 Старый WB-гид копирования", callback_data="start_guided")],
+            [InlineKeyboardButton(text="🛒 Ozon: общий Ctrl+A/Ctrl+C", callback_data="how_ozon")],
+            [InlineKeyboardButton(text="📸 Запасной: скриншоты", callback_data="how_screenshots")],
+            [InlineKeyboardButton(text="📖 Как пользоваться", callback_data="how_help")],
+        ],
+    )
+
+
+def _build_help_text() -> str:
+    return (
+        "<b>📖 AI-аудитор — справка</b>\n\n"
+        "<b>Основной способ</b>\n"
+        "В /start нажми <b>«🧾 Вставить текст карточки»</b>, затем:\n"
+        "1. Открой карточку WB/Ozon в браузере.\n"
+        "2. Нажми <code>Ctrl+A</code>.\n"
+        "3. Нажми <code>Ctrl+C</code>.\n"
+        "4. Вставь текст в бот одним или несколькими сообщениями или отправь <code>.txt</code>.\n"
+        "5. Нажми <b>«✅ Запустить быстрый аудит»</b>.\n\n"
+        "<b>Что проверяет быстрый аудит</b>\n"
+        "• заголовок\n"
+        "• цена и конкурентная полка\n"
+        "• описание\n"
+        "• характеристики\n"
+        "• SEO\n"
+        "• отзывы/риски, если они есть в копипасте\n\n"
+        "<b>Что не проверяется без медиа</b>\n"
+        "• фото\n"
+        "• инфографика\n"
+        "• видео\n"
+        "• порядок галереи\n\n"
+        "<b>Запасные способы</b>\n"
+        "• Excel/CSV из личного кабинета, если копипаст неудобен\n"
+        "• старый WB guide\n"
+        "• скриншоты как запасной ввод или будущий медиа-этап\n\n"
+        "Быстрый аудит — это не длинная анкета: достаточно текста страницы и кнопки запуска.\n\n"
+        "<i>/start — вернуться в начало</i>"
+    )
+
+
+def _build_help_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🧾 Вставить текст карточки", callback_data="paste_start")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_start")],
+        ],
+    )
+
+
+def _paste_instruction_text() -> str:
+    return (
+        "🧾 <b>Вставь текст карточки WB/Ozon</b>\n\n"
+        "1. Открой карточку WB/Ozon в браузере.\n"
+        "2. Нажми <code>Ctrl+A</code>.\n"
+        "3. Нажми <code>Ctrl+C</code>.\n"
+        "4. Вставь текст сюда одним или несколькими сообщениями.\n"
+        "5. Если Telegram не принимает длинный текст — отправь <code>.txt</code> файл.\n\n"
+        "Я накоплю текст и по кнопке ниже запущу быстрый аудит без проверки фото/видео. "
+        "Медиа можно будет добавить отдельным шагом после текстового отчёта."
+    )
+
+
+def _format_platform(platform: str) -> str:
+    names = {"wb": "Wildberries", "ozon": "Ozon", "unknown": "не определена"}
+    return names.get(platform, platform)
+
+
+def _format_optional(value: object | None) -> str:
+    if value is None or value == "":
+        return "нет в копипасте"
+    return _escape(str(value))
+
+
+async def _append_paste_to_state(
+    state: FSMContext,
+    new_part: str,
+    source_type: str,
+) -> tuple[int, int, bool]:
+    data = await state.get_data()
+    current_text = str(data.get("paste_text", ""))
+    parts_count = int(data.get("paste_parts", 0)) + 1
+    was_truncated = bool(data.get("paste_truncated", False))
+
+    paste_text, just_truncated = append_paste_part(current_text, new_part)
+    truncated = was_truncated or just_truncated
+    await state.update_data(
+        paste_text=paste_text,
+        paste_parts=parts_count,
+        paste_truncated=truncated,
+        paste_source_type=source_type,
+    )
+    return len(paste_text), parts_count, truncated
+
+
+def _build_paste_preview_text(
+    snapshot: MarketplaceCardSnapshot,
+    facts: LocalAuditFacts,
+) -> str:
+    price = f"{snapshot.current_price} ₽" if snapshot.current_price is not None else None
+    missing_blocks = ", ".join(snapshot.missing_blocks) if snapshot.missing_blocks else "нет"
+    return (
+        "🧾 <b>Быстрая локальная проверка</b>\n\n"
+        f"• Площадка: {_escape(_format_platform(snapshot.platform))}\n"
+        f"• Название: {_format_optional(snapshot.product_name)}\n"
+        f"• Цена: {_format_optional(price)}\n"
+        f"• Рейтинг: {_format_optional(snapshot.rating)}\n"
+        f"• Отзывы: {_format_optional(snapshot.review_count)}\n"
+        f"• Характеристик: {facts.characteristics_count}\n"
+        f"• Конкурентов: {facts.competitors_count}\n"
+        f"• missing_blocks: {_escape(missing_blocks)}\n\n"
+        "Данные собраны. AI-аудит будет подключён следующим шагом."
+    )
+
+
 class AuditFlow(StatesGroup):
     waiting_url = State()
+    collecting_paste = State()
+    collecting_media = State()
+    collecting_video_description = State()
     collecting_screenshots = State()
     auditing = State()
     choosing_product = State()
@@ -123,27 +420,8 @@ async def _do_start(message: Message, state: FSMContext, user_id: int) -> None:
 
     await state.clear()
     await state.set_state(AuditFlow.waiting_url)
-    start_caption = (
-        "👋 <b>Привет! Я — AI-аудитор карточек WB и Ozon</b>\n\n"
-        "🔥 Узнай, почему карточка не продаёт — и как это исправить\n\n"
-        "Анализирую 5 блоков: заголовок, фото, описание, SEO, конкуренты\n"
-        "Приоритеты: 🔴 срочно, 🟡 важно, 🟢 желательно\n\n"
-        "📊 <b>Экспорт из ЛК</b> — загрузи XLSX/CSV из WB или Ozon\n"
-        "📦 <b>WB</b> — гид копирования (5 шагов по вкладкам карточки)\n"
-        "🛒 <b>Ozon</b> — скопируй текст карточки и отправь\n"
-        "📸 <b>Скриншоты</b> — для чужих карточек\n\n"
-        "⚡ 3 бесплатных аудита — попробуй сейчас!\n\n"
-        f"{start_footer}"
-    )
-    start_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📊 Загрузить экспорт WB/Ozon (XLSX/CSV)", callback_data="how_export")],
-            [InlineKeyboardButton(text="📦 WB — гид копирования (5 шагов)", callback_data="start_guided")],
-            [InlineKeyboardButton(text="🛒 Ozon — скопировать текст", callback_data="how_ozon")],
-            [InlineKeyboardButton(text="📸 Скриншоты", callback_data="how_screenshots")],
-            [InlineKeyboardButton(text="📖 Как пользоваться", callback_data="how_help")],
-        ]
-    )
+    start_caption = _build_start_caption(start_footer)
+    start_kb = _build_start_keyboard()
     try:
         await message.answer_video(
             video="BAACAgIAAxkDAAIBpWoRpQlbuS1l6rjDVYRo3GTIzNNEAALanAAC8xaQSOfkk1YK5sz2OwQ",
@@ -160,7 +438,10 @@ async def _do_start(message: Message, state: FSMContext, user_id: int) -> None:
 @router.callback_query(F.data == "how_export")
 async def how_export_cb(callback: CallbackQuery) -> None:
     await callback.message.answer(
-        "<b>📊 Аудит по экспорту из личного кабинета</b>\n\n"
+        "<b>📊 Экспорт XLSX/CSV — запасной способ</b>\n\n"
+        "Основной путь сейчас проще: открой карточку WB/Ozon в браузере, "
+        "нажми <code>Ctrl+A</code>, затем <code>Ctrl+C</code> и вставь текст в бот.\n\n"
+        "Экспорт из личного кабинета можно использовать, если копипаст страницы неудобен.\n\n"
         "<b>Wildberries:</b>\n"
         "1. ЛК → «Товары» → отметить нужные → «Массовое редактирование»\n"
         "2. «Выгрузить в Excel»\n"
@@ -179,12 +460,13 @@ async def how_export_cb(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "how_ozon")
 async def how_ozon_cb(callback: CallbackQuery) -> None:
     await callback.message.answer(
-        "<b>🛒 Ozon — скопируй текст карточки</b>\n\n"
-        "1. Открой карточку товара на Ozon\n"
-        "2. Скопируй всё что видишь: название, цену, описание, характеристики\n"
-        "3. Отправь текст сюда\n\n"
-        "Бот проанализирует и выдаст отчёт.\n\n"
-        "<i>Автозагрузка по ссылке временно недоступна — Ozon блокирует серверные запросы.</i>",
+        "<b>🛒 Ozon — используй общий способ</b>\n\n"
+        "Для Ozon не нужен отдельный маршрут: открой карточку в браузере, "
+        "нажми <code>Ctrl+A</code>, затем <code>Ctrl+C</code> и вставь текст в бот "
+        "одним или несколькими сообщениями.\n\n"
+        "Если Telegram не принимает длинный текст — отправь <code>.txt</code> файл.\n\n"
+        "Быстрый аудит проверит текст карточки без фото/видео. "
+        "Медиа можно будет добавить отдельным шагом после текстового отчёта.",
         parse_mode="HTML",
     )
     await _safe_callback_answer(callback)
@@ -193,11 +475,11 @@ async def how_ozon_cb(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "how_screenshots")
 async def how_screenshots_cb(callback: CallbackQuery) -> None:
     await callback.message.answer(
-        "<b>📸 Аудит по скриншотам</b>\n\n"
-        "Подходит если нет ссылки Ozon и карточка не ваша.\n\n"
-        "1. Нажми <b>«▶️ Начать аудит WB»</b>\n"
-        "2. На шаге 4 отправь скриншоты фото товара\n"
-        "3. Или в любой момент отправь скриншот — бот распознает текст\n\n"
+        "<b>📸 Скриншоты — запасной способ</b>\n\n"
+        "Основной путь — копипаст текста страницы через <code>Ctrl+A</code> и <code>Ctrl+C</code>.\n\n"
+        "Скриншоты сейчас можно использовать как старый запасной ввод. "
+        "Отдельный медиа-этап для фото, инфографики, видео и порядка галереи "
+        "будет подключено следующим шагом.\n\n"
         "<i>На компьютере: Win+Shift+S → выдели область → Ctrl+V в чат</i>\n"
         "<i>На телефоне: громкость↓ + питание одновременно</i>",
         parse_mode="HTML",
@@ -208,27 +490,9 @@ async def how_screenshots_cb(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "how_help")
 async def how_help_cb(callback: CallbackQuery) -> None:
     await callback.message.answer(
-        "<b>📖 Справка</b>\n\n"
-        "<b>Что делает бот:</b>\n"
-        "Анализирует карточку товара на WB/Ozon по 5 блокам: "
-        "заголовок, фото/видео, описание, SEO, конкуренты. "
-        "Выдаёт отчёт с приоритетами: 🔴 срочно, 🟡 важно, 🟢 желательно.\n\n"
-        "<b>Способы аудита:</b>\n"
-        "• WB — гид копирования (5 шагов по вкладкам карточки)\n"
-        "• Ozon — скопируй текст карточки и отправь\n"
-        "• Скриншоты — для чужих карточек\n\n"
-        "<b>Ограничения:</b>\n"
-        "• 3 бесплатных аудита\n"
-        "• Автозагрузка по ссылке недоступна (блокировка WB/Ozon)\n"
-        "• Кнопки видны только в приложении Telegram, не в Web-версии\n\n"
-        "<b>Поддержка:</b> " + (f'<a href="https://t.me/{settings.SUPPORT_CHANNEL.lstrip("@")}">канал поддержки</a>' if settings.SUPPORT_CHANNEL else "скоро появится канал поддержки") + "\n\n"
-        "<i>Вернуться в начало — /start</i>",
+        _build_help_text(),
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_start")],
-            ]
-        ),
+        reply_markup=_build_help_keyboard(),
     )
     await _safe_callback_answer(callback)
 
@@ -244,6 +508,209 @@ async def back_to_start_cb(callback: CallbackQuery, state: FSMContext) -> None:
 async def start_guided_audit_cb(callback: CallbackQuery, state: FSMContext) -> None:
     await start_guided_audit(callback.message, state)
     await _safe_callback_answer(callback)
+
+
+@router.callback_query(F.data == "paste_start")
+async def paste_start_cb(callback: CallbackQuery, state: FSMContext) -> None:
+    limit_msg = _check_audit_limit(callback.from_user.id)
+    if limit_msg:
+        await callback.message.answer(limit_msg, parse_mode="HTML")
+        await _safe_callback_answer(callback)
+        return
+
+    await state.clear()
+    await state.set_state(AuditFlow.collecting_paste)
+    await state.update_data(
+        paste_text="",
+        paste_parts=0,
+        paste_truncated=False,
+        paste_source_type="paste",
+    )
+    await callback.message.answer(
+        _paste_instruction_text(),
+        reply_markup=_paste_keyboard(),
+        parse_mode="HTML",
+    )
+    await _safe_callback_answer(callback)
+
+
+@router.callback_query(F.data == "paste_reset")
+async def paste_reset_cb(callback: CallbackQuery, state: FSMContext) -> None:
+    if await state.get_state() != AuditFlow.collecting_paste.state:
+        await _safe_callback_answer(callback, "Сначала начни вставку текста карточки", show_alert=True)
+        return
+
+    await state.set_state(AuditFlow.collecting_paste)
+    await state.update_data(
+        paste_text="",
+        paste_parts=0,
+        paste_truncated=False,
+        paste_source_type="paste",
+    )
+    await callback.message.answer(
+        _paste_instruction_text(),
+        reply_markup=_paste_keyboard(),
+        parse_mode="HTML",
+    )
+    await _safe_callback_answer(callback)
+
+
+@router.callback_query(F.data == "paste_run")
+async def paste_run_cb(callback: CallbackQuery, state: FSMContext) -> None:
+    if await state.get_state() != AuditFlow.collecting_paste.state:
+        await _safe_callback_answer(callback, "Сначала начни вставку текста карточки", show_alert=True)
+        return
+
+    data = await state.get_data()
+    paste_text = str(data.get("paste_text", ""))
+    if not is_enough_for_quick_audit(paste_text):
+        await _safe_callback_answer(callback, "Недостаточно текста карточки", show_alert=True)
+        return
+
+    limit_msg = _check_audit_limit(callback.from_user.id)
+    if limit_msg:
+        await callback.message.answer(limit_msg, parse_mode="HTML")
+        await _safe_callback_answer(callback)
+        return
+
+    source_type = "txt_file" if data.get("paste_source_type") == "txt_file" else "paste"
+    snapshot = parse_marketplace_paste(paste_text, source_type)
+    facts = build_local_audit_facts(snapshot)
+    await state.update_data(
+        paste_snapshot_dump=snapshot.model_dump(),
+        paste_facts_dump=facts.model_dump(),
+    )
+    if snapshot.platform == "unknown" or not snapshot.product_name:
+        await callback.message.answer(
+            "⚠️ <b>Не удалось определить карточку WB/Ozon.</b>\n\n"
+            "AI не запускаю, чтобы не выдумывать данные. Проверь, что в тексте есть "
+            "полный копипаст страницы карточки с названием товара и маркерами WB/Ozon, "
+            "или отправь .txt файл с копипастом.",
+            reply_markup=_paste_keyboard(),
+            parse_mode="HTML",
+        )
+        await _safe_callback_answer(callback)
+        return
+
+    await state.set_state(AuditFlow.auditing)
+    thinking_msg = await callback.message.answer(
+        "🔍 Запускаю быстрый AI-аудит по тексту карточки...\n\n"
+        "⏳ Обычно это занимает до 1 минуты.\n"
+        "⚠️ <b>Лимит уже проверен, списание будет только после успешного отчёта.</b>",
+        parse_mode="HTML",
+    )
+    await _safe_callback_answer(callback)
+    animation_task = asyncio.create_task(_animate_thinking(thinking_msg))
+
+    try:
+        report = await run_quick_text_audit(snapshot, facts)
+        if not report.platform:
+            report.platform = snapshot.platform
+        if not report.product_name:
+            report.product_name = snapshot.product_name or ""
+        if not report.url:
+            report.url = "manual_input"
+    except QuickAuditError as e:
+        logger.warning("Quick paste audit failed: %s", e)
+        animation_task.cancel()
+        try:
+            await thinking_msg.delete()
+        except Exception:
+            pass
+        await state.set_state(AuditFlow.collecting_paste)
+        await callback.message.answer(
+            "⚠️ <b>Быстрый AI-аудит сейчас не сработал.</b>\n\n"
+            "Текст карточки сохранён, бесплатный аудит не списан. "
+            "Можно нажать «✅ Запустить быстрый аудит» ещё раз или добавить текст карточки.",
+            reply_markup=_paste_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    animation_task.cancel()
+    try:
+        await thinking_msg.delete()
+    except Exception:
+        pass
+
+    await send_audit_report(
+        callback.message,
+        report,
+        state=state,
+        audit_user_id=callback.from_user.id,
+    )
+    _log_audit(
+        callback.from_user.id,
+        callback.from_user.username,
+        report.url or "manual_input",
+        report.platform or snapshot.platform,
+        report.overall_score,
+    )
+    await state.set_state(AuditFlow.waiting_url)
+
+
+@router.message(AuditFlow.collecting_paste, F.text)
+async def paste_text_received(message: Message, state: FSMContext) -> None:
+    text = message.text or ""
+    total_chars, parts_count, truncated = await _append_paste_to_state(
+        state,
+        text,
+        "paste",
+    )
+    await message.answer(
+        build_paste_status_text(total_chars, parts_count, truncated),
+        reply_markup=_paste_keyboard(),
+    )
+
+
+@router.message(AuditFlow.collecting_paste, F.document)
+async def paste_txt_received(message: Message, state: FSMContext, bot: Bot) -> None:
+    doc = message.document
+    if doc is None:
+        return
+
+    if not is_txt_document(doc.file_name):
+        await message.answer(
+            "В этом режиме нужен .txt или текст сообщением",
+            reply_markup=_paste_keyboard(),
+        )
+        return
+
+    if doc.file_size is not None and doc.file_size > PASTE_TXT_MAX_BYTES:
+        await message.answer(
+            "⚠️ .txt файл слишком большой. Максимум 128 КБ.",
+            reply_markup=_paste_keyboard(),
+        )
+        return
+
+    try:
+        file = await bot.get_file(doc.file_id)
+        file_bytes = await bot.download_file(file.file_path)
+        data = file_bytes.read(PASTE_TXT_MAX_BYTES + 1)
+        if len(data) > PASTE_TXT_MAX_BYTES:
+            await message.answer(
+                "⚠️ .txt файл слишком большой. Максимум 128 КБ.",
+                reply_markup=_paste_keyboard(),
+            )
+            return
+        text = decode_txt_file(data)
+    except Exception as e:
+        logger.warning(f"TXT paste download failed: {e}")
+        await message.answer(
+            "⚠️ Не удалось прочитать .txt файл. Попробуй отправить текст сообщением.",
+            reply_markup=_paste_keyboard(),
+        )
+        return
+
+    total_chars, parts_count, truncated = await _append_paste_to_state(
+        state,
+        text,
+        "txt_file",
+    )
+    await message.answer(
+        build_paste_status_text(total_chars, parts_count, truncated),
+        reply_markup=_paste_keyboard(),
+    )
 
 
 @router.message(AuditFlow.waiting_url, ~F.photo, ~F.document, ~F.video)
@@ -299,7 +766,12 @@ async def url_received(message: Message, state: FSMContext) -> None:
             pass
 
         if result:
-            await send_audit_report(message, result)
+            await send_audit_report(
+                message,
+                result,
+                state=state,
+                audit_user_id=message.from_user.id,
+            )
         else:
             await message.answer(
                 "⚠️ Не удалось загрузить карточку.\n\n"
@@ -496,7 +968,12 @@ async def text_in_collection(message: Message, state: FSMContext) -> None:
         await message.answer("🔗 Ссылка Ozon. Загружаю данные...")
         result = await _do_audit_url(url_match, "ozon", message)
         if result:
-            await send_audit_report(message, result)
+            await send_audit_report(
+                message,
+                result,
+                state=state,
+                audit_user_id=message.from_user.id,
+            )
         else:
             await message.answer("⚠️ Не удалось загрузить карточку по ссылке. Попробуй скриншот или текст.")
         await state.set_state(AuditFlow.waiting_url)
@@ -577,7 +1054,12 @@ async def _run_full_audit(message: Message, state: FSMContext, text: str, user_i
         pass
 
     if result:
-        await send_audit_report(message, result)
+        await send_audit_report(
+            message,
+            result,
+            state=state,
+            audit_user_id=uid,
+        )
     else:
         await message.answer(
             "⚠️ Не удалось выполнить аудит. Попробуй ещё раз.",
@@ -605,7 +1087,8 @@ async def _do_audit_url(url: str, platform: str, message: Message) -> AuditRepor
 
 async def _do_audit_text(text: str, message: Message, user_id: int = 0, platform: str = "manual") -> AuditReport | None:
     try:
-        report = await audit_card(text[-8000:], "", platform)
+        safe_text = sanitize_personal_data(text)[-8000:]
+        report = await audit_card(safe_text, "", platform)
         _log_audit(user_id or message.from_user.id, message.from_user.username, "", platform, report.overall_score)
         return report
     except Exception as e:
@@ -625,7 +1108,29 @@ def _log_audit(user_id: int, username: str | None, url: str, platform: str, scor
         _storage_instance.increment_usage(user_id)
 
 
-async def send_audit_report(message: Message, report: AuditReport) -> None:
+async def send_audit_report(
+    message: Message,
+    report: AuditReport,
+    state: FSMContext | None = None,
+    media_added: bool = False,
+    audit_user_id: int = 0,
+) -> None:
+    if state is not None:
+        report_state: dict[str, object] = {
+            "last_audit_report": report.model_dump(),
+            "last_report_media_added": media_added,
+            "last_audit_user_id": audit_user_id,
+        }
+        if not media_added:
+            report_state.update(
+                media_items=[],
+                video_descriptions=[],
+                media_photo_count=0,
+            )
+        await state.update_data(
+            **report_state,
+        )
+
     if report.overall_score:
         filled = min(10, max(1, report.overall_score // 10))
         empty = 10 - filled
@@ -635,8 +1140,19 @@ async def send_audit_report(message: Message, report: AuditReport) -> None:
             parse_mode="HTML",
         )
 
-    sections = {"title": "📝 ЗАГОЛОВОК", "photos": "📸 ФОТО/ВИДЕО", "description": "📄 ОПИСАНИЕ",
-                "seo": "🔍 SEO", "competitors": "🕵️ КОНКУРЕНТЫ"}
+    sections = {
+        "title": "📝 ЗАГОЛОВОК",
+        "price_competitors": "💰 ЦЕНА И КОНКУРЕНТЫ",
+        "description": "📄 ОПИСАНИЕ",
+        "seo": "🔍 SEO",
+        "reviews_risks": "💬 ОТЗЫВЫ И РИСКИ",
+        "photos": "📸 ФОТО/ВИДЕО",
+        "photo_video": "📸 ФОТО/ВИДЕО",
+        "media": "📸 ФОТО/ВИДЕО",
+        "gallery": "📸 ФОТО/ВИДЕО",
+        "video": "📸 ФОТО/ВИДЕО",
+        "competitors": "🕵️ КОНКУРЕНТЫ",
+    }
 
     for section_key, section_title in sections.items():
         section_items = [i for i in report.items if i.section == section_key]
@@ -665,16 +1181,48 @@ async def send_audit_report(message: Message, report: AuditReport) -> None:
     if report.competitor_insight:
         await message.answer(f"🕵️ <b>Конкуренты:</b>\n{_escape(report.competitor_insight)}", parse_mode="HTML")
 
-    summary_text = _format_audit_for_copy(report)
-    copy_key = f"{message.from_user.id}:{id(summary_text)}"
+    full_text = export_audit_report_text(report, media_added=media_added)
+    top_actions = extract_top_actions(report, limit=3)
+    if top_actions:
+        top_lines = ["✅ <b>3 главных действия</b>"]
+        top_lines.extend(
+            f"{index}. {_escape(action)}"
+            for index, action in enumerate(top_actions, start=1)
+        )
+        await message.answer("\n".join(top_lines), parse_mode="HTML")
+
+    full_chunks = _safe_send(full_text)
+    if len(full_chunks) <= REPORT_TEXT_MAX_CHUNKS:
+        await message.answer("📄 Полный текст отчёта:")
+        for chunk in full_chunks:
+            try:
+                await message.answer(chunk)
+            except Exception as e:
+                logger.warning(f"Failed to send full report chunk: {e}")
+                break
+    else:
+        await message.answer("📄 Полный отчёт длинный, прикрепляю его файлом .txt.")
+
+    try:
+        report_file = BufferedInputFile(
+            full_text.encode("utf-8"),
+            filename=build_report_filename(report),
+        )
+        await message.answer_document(
+            report_file,
+            caption="💾 Полный отчёт в .txt",
+        )
+    except Exception as e:
+        logger.warning("Failed to send audit txt file: %s", e, exc_info=True)
+
+    summary_text = full_text
+    user_id = message.from_user.id if message.from_user else 0
+    copy_key = f"{user_id}:{id(summary_text)}"
     if _storage_instance is not None:
         _storage_instance.store_copy_data(copy_key, summary_text)
     await message.answer(
         "📋 Нажми, чтобы скопировать отчёт целиком.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📋 Копировать отчёт", callback_data=f"copy_audit:{copy_key}")],
-            [InlineKeyboardButton(text="↩️ В главное меню", callback_data="back_to_start")],
-        ]),
+        reply_markup=_report_actions_keyboard(copy_key, media_added=media_added),
     )
 
 
@@ -690,8 +1238,15 @@ def _section_score(report: AuditReport, section: str) -> str:
 
 
 def _format_audit_for_copy(report: AuditReport) -> str:
-    sections = {"title": "=== ЗАГОЛОВОК ===", "photos": "=== ФОТО/ВИДЕО ===",
-                "description": "=== ОПИСАНИЕ ===", "seo": "=== SEO ===", "competitors": "=== КОНКУРЕНТЫ ==="}
+    sections = {
+        "title": "=== ЗАГОЛОВОК ===",
+        "price_competitors": "=== ЦЕНА И КОНКУРЕНТЫ ===",
+        "description": "=== ОПИСАНИЕ ===",
+        "seo": "=== SEO ===",
+        "reviews_risks": "=== ОТЗЫВЫ И РИСКИ ===",
+        "photos": "=== ФОТО/ВИДЕО ===",
+        "competitors": "=== КОНКУРЕНТЫ ===",
+    }
     parts = [f"AI-АУДИТ КАРТОЧКИ\n{report.url}\n"]
     if report.overall_score:
         parts.insert(0, f"=== ОБЩАЯ ОЦЕНКА: {report.overall_score}/100 ===")
@@ -766,9 +1321,11 @@ async def access_request(callback: CallbackQuery) -> None:
         ]
     )
     try:
+        safe_full_name = _escape(full_name)
+        safe_username = _escape(username)
         await callback.bot.send_message(
             admin_id,
-            f"📩 <b>Запрос доступа</b>\n\n👤 {full_name}\n🆔 <code>{user_id}</code>\n{'📛 @' + username if username else '📛 username скрыт'}",
+            f"📩 <b>Запрос доступа</b>\n\n👤 {safe_full_name}\n🆔 <code>{user_id}</code>\n{'📛 @' + safe_username if username else '📛 username скрыт'}",
             reply_markup=admin_kb,
             parse_mode="HTML",
         )
@@ -845,8 +1402,255 @@ async def copy_audit_report(callback: CallbackQuery) -> None:
     if not text:
         await _safe_callback_answer(callback,"⚠️ Отчёт устарел")
         return
-    await callback.message.answer(f"<pre>{_escape(text)}</pre>", parse_mode="HTML")
+    for chunk in _safe_send_pre_chunks(text):
+        await callback.message.answer(f"<pre>{_escape(chunk)}</pre>", parse_mode="HTML")
     await _safe_callback_answer(callback,"📋 Текст отчёта ниже — выдели и скопируй сам")
+
+
+@router.callback_query(F.data == "media_next_step")
+async def media_next_step_cb(callback: CallbackQuery, state: FSMContext) -> None:
+    limit_msg = await _check_media_audit_limit(callback.from_user.id, state)
+    if limit_msg:
+        await callback.message.answer(limit_msg, parse_mode="HTML")
+        await _safe_callback_answer(callback)
+        return
+
+    data = await state.get_data()
+    await state.set_state(AuditFlow.collecting_media)
+    await state.update_data(
+        media_items=list(data.get("media_items", [])),
+        video_descriptions=list(data.get("video_descriptions", [])),
+        media_photo_count=int(data.get("media_photo_count", 0)),
+    )
+    await callback.message.answer(
+        _build_media_start_text(),
+        reply_markup=_media_keyboard(),
+        parse_mode="HTML",
+    )
+    await _safe_callback_answer(callback)
+
+
+@router.message(AuditFlow.collecting_media, F.photo)
+async def media_photo_received(message: Message, state: FSMContext, bot: Bot) -> None:
+    if message.from_user is None:
+        return
+
+    data = await state.get_data()
+    photo_count = int(data.get("media_photo_count", 0))
+    if photo_count >= settings.MEDIA_MAX_PHOTOS:
+        await message.answer(
+            f"⚠️ Уже принято {settings.MEDIA_MAX_PHOTOS} фото — это максимум для одного медиа-блока.",
+            reply_markup=_media_keyboard(),
+        )
+        return
+
+    limit_msg = await _check_media_audit_limit(message.from_user.id, state)
+    if limit_msg:
+        await message.answer(limit_msg, parse_mode="HTML")
+        return
+
+    photo = message.photo[-1]
+    if photo.file_size and photo.file_size > settings.MEDIA_MAX_IMAGE_BYTES:
+        await message.answer(
+            "⚠️ Фото слишком большое. Отправь изображение до "
+            f"{settings.MEDIA_MAX_IMAGE_BYTES // (1024 * 1024)} МБ.",
+            reply_markup=_media_keyboard(),
+        )
+        return
+
+    position = photo_count + 1
+    status_message = await message.answer(f"📸 Фото {position} принято, анализирую...")
+    try:
+        file = await bot.get_file(photo.file_id)
+        downloaded = await bot.download_file(file.file_path)
+        image_data = downloaded.read()
+        if len(image_data) > settings.MEDIA_MAX_IMAGE_BYTES:
+            await status_message.answer(
+                "⚠️ Фото слишком большое. Отправь изображение до "
+                f"{settings.MEDIA_MAX_IMAGE_BYTES // (1024 * 1024)} МБ.",
+                reply_markup=_media_keyboard(),
+            )
+            return
+        media_item = await call_gemini_media_audit(image_data, position)
+    except MediaAuditError as exc:
+        logger.warning("Media audit failed for photo %d: %s", position, exc.__class__.__name__)
+        await status_message.answer(
+            f"⚠️ Не удалось разобрать фото {position}: {_escape(str(exc))}\n\n"
+            "Можно отправить другое фото или нажать «✅ Я отправил все фото».",
+            reply_markup=_media_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+    except Exception as exc:
+        logger.warning("Unexpected media audit failure for photo %d: %s", position, exc.__class__.__name__)
+        await status_message.answer(
+            f"⚠️ Не удалось разобрать фото {position}. Можно попробовать ещё раз.",
+            reply_markup=_media_keyboard(),
+        )
+        return
+
+    data = await state.get_data()
+    media_items = list(data.get("media_items", []))
+    media_items.append(media_item.model_dump())
+    await state.update_data(
+        media_items=media_items,
+        media_photo_count=position,
+    )
+
+    await status_message.answer(
+        "✅ <b>Фото принято</b>\n\n"
+        f"Позиция: {media_item.position}\n"
+        f"Тип: {_escape(_media_type_label(media_item.media_type))}\n"
+        f"Предварительный вердикт: {_escape(_media_verdict_label(media_item.preliminary_verdict))}\n\n"
+        "Можно отправить следующее фото или нажать «✅ Я отправил все фото».",
+        reply_markup=_media_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "media_describe_video")
+async def media_describe_video_cb(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    videos = list(data.get("video_descriptions", []))
+    if len(videos) >= settings.MEDIA_MAX_VIDEOS:
+        await _safe_callback_answer(
+            callback,
+            f"Максимум {settings.MEDIA_MAX_VIDEOS} описания видео",
+            show_alert=True,
+        )
+        return
+
+    await state.set_state(AuditFlow.collecting_video_description)
+    await callback.message.answer(
+        build_video_description_help_text(),
+        reply_markup=_media_video_keyboard(),
+        parse_mode="HTML",
+    )
+    await _safe_callback_answer(callback)
+
+
+@router.callback_query(F.data == "media_back_to_photos")
+async def media_back_to_photos_cb(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AuditFlow.collecting_media)
+    await callback.message.answer(
+        "📸 Вернулись к фото. Можно отправить следующее фото или завершить медиа-блок.",
+        reply_markup=_media_keyboard(),
+    )
+    await _safe_callback_answer(callback)
+
+
+@router.message(AuditFlow.collecting_video_description, F.text)
+async def media_video_description_received(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    videos = list(data.get("video_descriptions", []))
+    if len(videos) >= settings.MEDIA_MAX_VIDEOS:
+        await state.set_state(AuditFlow.collecting_media)
+        await message.answer(
+            f"⚠️ Уже принято {settings.MEDIA_MAX_VIDEOS} описания видео — это максимум.",
+            reply_markup=_media_keyboard(),
+        )
+        return
+
+    try:
+        video = parse_video_description(message.text or "")
+    except MediaAuditError as exc:
+        await message.answer(
+            f"⚠️ {_escape(str(exc))}\n\n"
+            "Заполни шаблон ещё раз или вернись к фото.",
+            reply_markup=_media_video_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    videos.append(video.model_dump())
+    await state.update_data(video_descriptions=videos)
+    await state.set_state(AuditFlow.collecting_media)
+    await message.answer(
+        "✅ <b>Описание видео принято</b>\n\n"
+        f"Тип: {_escape(_video_type_label(video.video_type))}\n"
+        f"Позиция: {_escape(str(video.position)) if video.position is not None else 'не указана'}\n\n"
+        "Можно отправить фото, описать ещё одно видео или завершить медиа-блок.",
+        reply_markup=_media_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@router.message(AuditFlow.collecting_media, F.video)
+@router.message(AuditFlow.collecting_media, F.animation)
+@router.message(AuditFlow.collecting_media, F.document)
+async def media_file_rejected(message: Message) -> None:
+    await message.answer(
+        "⚠️ В MVP видео и файлы не загружаются для медиа-аудита.\n\n"
+        "Отправляй фото галереи как изображения, а видео опиши текстом по кнопке «🎥 Описать видео».",
+        reply_markup=_media_keyboard(),
+    )
+
+
+@router.message(AuditFlow.collecting_media, F.text)
+async def media_text_received_in_photo_flow(message: Message) -> None:
+    await message.answer(
+        "📸 Сейчас жду фото галереи. Если это описание видео, нажми «🎥 Описать видео» и заполни шаблон.",
+        reply_markup=_media_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "media_photos_done")
+async def media_photos_done_cb(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    media_items = [
+        MediaItem.model_validate(item)
+        for item in list(data.get("media_items", []))
+    ]
+    videos = [
+        VideoDescription.model_validate(item)
+        for item in list(data.get("video_descriptions", []))
+    ]
+    if not media_items and not videos:
+        await _safe_callback_answer(
+            callback,
+            "Добавьте хотя бы одно фото или описание видео",
+            show_alert=True,
+        )
+        return
+
+    audit_items = build_media_audit_items(media_items, videos)
+    saved_report = data.get("last_audit_report")
+    if isinstance(saved_report, dict):
+        report = AuditReport.model_validate(saved_report)
+        report.items.extend(audit_items)
+        report.summary = (
+            f"{report.summary}\n\nМедиа-блок добавлен: проверено фото — "
+            f"{len(media_items)}, описаний видео — {len(videos)}."
+        ).strip()
+    else:
+        snapshot_dump = data.get("paste_snapshot_dump")
+        product_name = ""
+        platform = ""
+        if isinstance(snapshot_dump, dict):
+            product_name = str(snapshot_dump.get("product_name") or "")
+            platform = str(snapshot_dump.get("platform") or "")
+        report = AuditReport(
+            url="manual_input",
+            platform=platform,
+            product_name=product_name,
+            overall_score=0,
+            items=audit_items,
+            summary=(
+                "Медиа-блок собран отдельно: быстрый текстовый аудит повторно не запускался. "
+                f"Проверено фото — {len(media_items)}, описаний видео — {len(videos)}."
+            ),
+        )
+
+    await _safe_callback_answer(callback)
+    await callback.message.answer("✅ Собираю обновлённый отчёт с медиа-блоком...")
+    await send_audit_report(
+        callback.message,
+        report,
+        state=state,
+        media_added=True,
+        audit_user_id=callback.from_user.id,
+    )
+    await state.set_state(AuditFlow.waiting_url)
 
 
 @router.message(F.document)
@@ -961,20 +1765,20 @@ async def audit_export_product(callback: CallbackQuery, state: FSMContext) -> No
         suppl_items=[{"id": f"item_{i}", "text": m} for i, m in enumerate(missing)],
     )
 
-    present: list[str] = [f"• Название: {product.title[:60]}"]
+    present: list[str] = [f"• Название: {_escape(product.title[:60])}"]
     if product.brand:
-        present.append(f"• Бренд: {product.brand}")
+        present.append(f"• Бренд: {_escape(product.brand)}")
     if product.price:
-        present.append(f"• Цена: {product.price} ₽")
+        present.append(f"• Цена: {_escape(product.price)} ₽")
     if product.description:
         present.append(f"• Описание: есть ({len(product.description)} симв.)")
     if product.category:
-        present.append(f"• Категория: {product.category}")
+        present.append(f"• Категория: {_escape(product.category)}")
 
     missing_text = "\n".join(f"  {m}" for m in missing)
     present_text = "\n".join(present)
     sent = await callback.message.answer(
-        f"✅ <b>{product.title[:80]}</b>\n\n"
+        f"✅ <b>{_escape(product.title[:80])}</b>\n\n"
         f"<b>Есть из экспорта:</b>\n"
         f"{present_text}\n\n"
         f"<b>Добавьте недостающее:</b>\n"
@@ -1112,29 +1916,9 @@ async def suppl_run_audit(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
     await message.answer(
-        "<b>📖 AI-аудитор — справка</b>\n\n"
-        "<b>Что делает бот:</b>\n"
-        "Анализирует карточку товара на WB/Ozon по 5 блокам:\n"
-        "📝 Заголовок, 📸 Фото/видео, 📄 Описание, 🔍 SEO, 🕵️ Конкуренты.\n"
-        "Выдаёт отчёт с приоритетами: 🔴 срочно, 🟡 важно, 🟢 желательно.\n\n"
-        "<b>Как аудитовать Ozon:</b>\n"
-        "1. Открой карточку на Ozon\n"
-        "2. Скопируй текст: название, цену, описание, характеристики\n"
-        "3. Отправь боту\n\n"
-        "<b>Как аудитовать Wildberries:</b>\n"
-        "1. Нажми кнопку «WB — гид копирования»\n"
-        "2. Копируй данные по шагам: заголовок → «О товаре» → отзывы → фото\n"
-        "3. Нажми ✅ Запустить аудит\n\n"
-        "<b>Как сделать скриншот:</b>\n"
-        "• Компьютер: Win+Shift+S → выдели → Ctrl+V в чат\n"
-        "• Телефон: громкость↓ + питание одновременно\n\n"
-        "<b>Ограничения:</b>\n"
-        "• 3 аудита в минуту\n"
-        "• Автозагрузка по ссылке недоступна — WB и Ozon блокируют серверные IP\n\n"
-        "<b>💬 Поддержка:</b> " + (f'<a href="https://t.me/{settings.SUPPORT_CHANNEL.lstrip("@")}">канал поддержки</a>' if settings.SUPPORT_CHANNEL else "скоро") + "\n"
-        + (f'<b>🔒 Конфиденциальность:</b> <a href="{settings.PRIVACY_URL}">политика обработки данных</a>\n\n' if settings.PRIVACY_URL else "")
-        + "<i>/start — вернуться в начало</i>",
+        _build_help_text(),
         parse_mode="HTML",
+        reply_markup=_build_help_keyboard(),
     )
 
 
@@ -1165,9 +1949,9 @@ async def cmd_stats(message: Message) -> None:
         if uid == settings.ADMIN_USER_ID:
             display = "👑 Организатор"
         elif full_name:
-            display = full_name
+            display = _escape(full_name)
         elif username and username != "admin":
-            display = f"@{username}"
+            display = f"@{_escape(username)}"
         else:
             display = f"ID:{uid}"
         user_gens = [r for r in gen_rows if r["user_id"] == uid]

@@ -6,6 +6,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, TelegramObject
 
 
+_RATE_LIMITED_STATES = {
+    "AuditFlow:waiting_url",
+    "AuditFlow:collecting_paste",
+    "AuditFlow:collecting_screenshots",
+    "AuditFlow:supplementing_export",
+}
+
+
 class RateLimiter:
     # NOTE: _buckets grows unbounded with unique user_ids.
     # For MVP (<50 users) this is fine — dict with empty lists is negligible.
@@ -39,7 +47,7 @@ class RateLimitMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        if not isinstance(event, Message) or event.text is None or event.from_user is None:
+        if not isinstance(event, Message) or event.from_user is None:
             return await handler(event, data)
 
         if event.text == "🔄 Начать заново":
@@ -50,7 +58,7 @@ class RateLimitMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         current_state = await state.get_state()
-        if current_state != "AuditFlow:waiting_url":
+        if current_state not in _RATE_LIMITED_STATES:
             return await handler(event, data)
 
         if not self._limiter.is_allowed(event.from_user.id):

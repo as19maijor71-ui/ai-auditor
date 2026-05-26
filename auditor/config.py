@@ -1,10 +1,13 @@
-from dotenv import load_dotenv
-from pydantic_settings import BaseSettings
-
-load_dotenv()
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
     BOT_TOKEN: str
 
     AI_PROVIDER: str = "openrouter"
@@ -17,6 +20,21 @@ class Settings(BaseSettings):
     YANDEXGPT_API_KEY: str = ""
     YANDEXGPT_FOLDER_ID: str = ""
     YANDEXGPT_BASE_URL: str = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+
+    GEMINI_API_KEY: str = ""
+    GEMINI_TEXT_MODEL: str = "gemini-2.5-flash"
+    GEMINI_VISION_MODEL: str = "gemini-2.5-flash-lite"
+    GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/models"
+
+    OPENAI_API_KEY: str = ""
+    OPENAI_TEXT_MODEL: str = "gpt-5-mini"
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1/chat/completions"
+
+    QUICK_AUDIT_MAX_TOKENS: int = 4096
+    QUICK_AUDIT_CLEANED_TEXT_LIMIT: int = 12000
+    MEDIA_MAX_PHOTOS: int = 8
+    MEDIA_MAX_VIDEOS: int = 3
+    MEDIA_MAX_IMAGE_BYTES: int = 8 * 1024 * 1024
 
     PROXY_URL: str = ""
 

@@ -1,3 +1,9 @@
+import json
+
+from auditor.config import settings
+from auditor.engine.paste_models import LocalAuditFacts, MarketplaceCardSnapshot
+
+
 AUDIT_PROMPT_TEMPLATE = """Ты — senior-аудитор карточек товаров на Wildberries и Ozon с подтверждённым опытом в SEO, конверсионном копирайтинге, поведенческой психологии и визуальном мерчандайзинге. Твои отчёты покупают селлеры за деньги.
 
 ## Карточка товара
@@ -203,6 +209,88 @@ CHECK_COMPLETENESS_PROMPT = """Ты анализируешь карточку т
 
 Без пояснений. Только список или "ВСЁ ЕСТЬ"."""
 
+QUICK_TEXT_AUDIT_PROMPT = """Ты — senior-аудитор карточек товара Wildberries/Ozon. Выполни быстрый текстовый аудит только по структурированным данным ниже.
+
+Важно:
+- Не используй внешние знания о конкретной карточке и не выдумывай недостающие факты.
+- Это быстрый аудит без проверки фото, инфографики, видео и порядка галереи, если медиа не переданы в данных. Явно укажи это в summary и в разделе reviews_risks.
+- Не обещай точный рост продаж, точный CTR, точную конверсию или точные позиции в поиске. Можно писать только вероятностно: "может снизить", "вероятно усилит", "риск потери".
+- Не предлагай "изучить конкурентов" как действие. Используй только competitor_cards из входа.
+- Максимум 3 item с priority="red". Остальные критичные наблюдения переводи в yellow.
+- Возвращай только строгий JSON AuditReport, без markdown и пояснений.
+
+Обязательные sections в items:
+1. title
+2. price_competitors
+3. description
+4. seo
+5. reviews_risks
+
+Схема ответа:
+{
+  "url": "",
+  "platform": "одно из: wb, ozon, unknown или пустая строка",
+  "product_name": "название из snapshot или пустая строка",
+  "overall_score": 0,
+  "items": [
+    {
+      "section": "title",
+      "priority": "red | yellow | green",
+      "finding": "1 конкретный факт из входных данных",
+      "recommendation": "конкретное действие без обещаний точных результатов",
+      "why": "почему это влияет на карточку"
+    }
+  ],
+  "summary": "3 главных действия. Обязательно упомяни, что это быстрый аудит без проверки медиа, если фото/видео не добавлены.",
+  "competitor_insight": "вывод только по competitor_cards; если их нет, так и напиши"
+}
+
+Требования к содержанию:
+- overall_score: целое число 0-100.
+- priority: только red/yellow/green.
+- В каждом обязательном section должен быть минимум один item.
+- title: оцени длину, повторы, читаемость и недостающие элементы.
+- price_competitors: оцени цену относительно competitor_cards, если они есть; если нет — отметь риск неполной конкурентной картины.
+- description: оцени наличие, длину, структуру, выгоды, CTA.
+- seo: оцени ключи в названии/описании/характеристиках и переспам по facts.repeated_words.
+- reviews_risks: оцени отзывы/рейтинг/вопросы/пропущенные блоки и явно назови, что медиа не проверялись.
+
+Структурированный вход:
+{input_json}
+"""
+
+MEDIA_AUDIT_PROMPT = """Ты — senior-аудитор карточек товара Wildberries/Ozon. Проанализируй только одно изображение из галереи товара.
+
+Позиция изображения в галерее: {position}
+
+Правила:
+- Анализируй только то, что видно на присланном изображении.
+- Не делай выводы о товаре вне этого изображения и не используй внешние знания.
+- Не генерируй новый дизайн фото, макет инфографики или готовую картинку.
+- Не обещай точный рост продаж, CTR, конверсии или позиций.
+- Если текст на изображении не читается, оставь ocr_text пустым или кратко укажи, что текст неразборчив.
+- preliminary_verdict — предварительный, без категоричных обещаний.
+- Верни только строгий JSON MediaItem, без markdown и текста вокруг.
+
+Схема ответа:
+{
+  "position": {position},
+  "ocr_text": "видимый текст на изображении, если он читается",
+  "visual_summary": "что видно на изображении: товар, фон, композиция, смысл слайда",
+  "media_type": "main | lifestyle | infographic | composition | packaging | review | other",
+  "preliminary_verdict": "keep | remove | move | unknown"
+}
+
+Критерии:
+- main: главное фото товара.
+- lifestyle: товар в использовании, на модели, в интерьере или жизненном сценарии.
+- infographic: характеристики, преимущества, размеры, схемы, текстовые блоки.
+- composition: состав, материалы, ингредиенты, комплектация.
+- packaging: упаковка, коробка, маркировка.
+- review: отзывы, UGC, социальное доказательство.
+- other: всё остальное.
+"""
+
 
 def build_audit_prompt(product_text: str, platform: str, url: str) -> str:
     safe_text = product_text.replace("{", "{{").replace("}", "}}")
@@ -210,4 +298,45 @@ def build_audit_prompt(product_text: str, platform: str, url: str) -> str:
         platform=platform,
         url=url,
         product_text=safe_text[:8000],
+    )
+
+
+def build_quick_text_audit_prompt(
+    snapshot: MarketplaceCardSnapshot,
+    facts: LocalAuditFacts,
+) -> str:
+    snapshot_payload = snapshot.model_dump(
+        exclude={"competitor_cards", "missing_blocks"}
+    )
+    snapshot_payload["cleaned_text"] = snapshot.cleaned_text[
+        : settings.QUICK_AUDIT_CLEANED_TEXT_LIMIT
+    ]
+
+    payload = {
+        "snapshot": snapshot_payload,
+        "facts": facts.model_dump(),
+        "missing_blocks": list(snapshot.missing_blocks),
+        "competitor_cards": [card.model_dump() for card in snapshot.competitor_cards],
+    }
+    input_json = json.dumps(payload, ensure_ascii=False, indent=2)
+    return QUICK_TEXT_AUDIT_PROMPT.replace("{input_json}", input_json)
+
+
+def build_media_audit_prompt(position: int) -> str:
+    return MEDIA_AUDIT_PROMPT.replace("{position}", str(position))
+
+
+def build_video_description_help_text() -> str:
+    return (
+        "🎥 <b>Опиши видео по шаблону</b>\n\n"
+        "Видео 1\n"
+        "Позиция в галерее:\n"
+        "Длительность:\n"
+        "Что показано:\n"
+        "Тип видео:\n"
+        "Качество:\n"
+        "Есть ли текст на экране:\n"
+        "Есть ли призыв к покупке:\n\n"
+        "Тип можно написать своими словами: распаковка, обзор товара, использование, "
+        "до/после, рецепт или инструкция, отзыв покупателя, слайд-шоу, реклама, слабое/непонятное."
     )

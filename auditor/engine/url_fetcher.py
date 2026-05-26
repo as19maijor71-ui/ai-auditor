@@ -18,6 +18,10 @@ _OZON_PATH_RE = re.compile(r"^/product/")
 _OZON_SHARE_RE = re.compile(r"^/t/")
 
 
+def _normalize_marketplace_hostname(hostname: str | None) -> str:
+    return (hostname or "").lower().removeprefix("www.").removeprefix("m.")
+
+
 def detect_platform(url: str) -> str | None:
     try:
         parsed = urlparse(url)
@@ -27,8 +31,7 @@ def detect_platform(url: str) -> str | None:
     if parsed.scheme not in ("http", "https"):
         return None
 
-    hostname = parsed.hostname or ""
-    hostname = hostname.lower().removeprefix("www.").removeprefix("m.")
+    hostname = _normalize_marketplace_hostname(parsed.hostname)
 
     if hostname == "wildberries.ru" and _WB_CATALOG_RE.search(parsed.path):
         return "wb"
@@ -89,12 +92,12 @@ async def _fetch_ozon_page(url: str) -> str:
 
 async def fetch_product_page(url: str) -> str:
     parsed = urlparse(url)
-    hostname = (parsed.hostname or "").lower()
+    hostname = _normalize_marketplace_hostname(parsed.hostname)
 
-    if "wildberries.ru" in hostname:
+    if hostname == "wildberries.ru":
         return await _fetch_wb_page(url)
 
-    if "ozon.ru" in hostname:
+    if hostname == "ozon.ru":
         return await _fetch_ozon_page(url)
 
     raise CompetitorFetchError("Неподдерживаемая платформа")
